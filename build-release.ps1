@@ -119,7 +119,10 @@ if ($LASTEXITCODE -ne 0) { throw '安装器打包失败' }
 
 # ---------- 5) 输出安装包 ----------
 $setupExe = Join-Path $root 'dist/installer/正画安装程序.exe'
-$finalExe = Join-Path $root "dist/正画-Setup-$version.exe"
+# 安装包统一用 ASCII 文件名：GitHub Release 资产名会被剥离非 ASCII 字符
+    # （实测"正画-Setup-1.3.0.exe"上传后变成"-Setup-1.3.0.exe"），而自动更新要按资产名
+    # 精确比对 checksums.txt，命名必须唯一。安装包内的品牌与窗口标题不受影响。
+    $finalExe = Join-Path $root "dist/PivotPic-Setup-$version.exe"
 Copy-Item $setupExe $finalExe -Force
 
 $sizeMb = [math]::Round((Get-Item $finalExe).Length / 1MB, 1)

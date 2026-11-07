@@ -3,7 +3,9 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using PivotPic.Models;
@@ -295,6 +297,17 @@ internal sealed class GitPortService : IGitPortService
             return Fail(ProxyFailureKind.StartTimeout, $"{ReadyTimeoutMs}ms 内未通过健康检查", enableSystemPac);
         }
 
+        // 5.1) 安全断言：本软件只允许纯透传。
+        // 组件只在启动时读一次 settings.json，万一读到的是历史配置（mitm=true），
+        // 它就会试图解密 GitHub 流量；而我们从不安装它的根证书，客户端只会看到自签证书而报错。
+        // 这种实例既不安全也没用，宁可判失败降级直连，也不把流量交给它。
+        if (!await EnsurePassthroughOnlyAsync(cancellationToken).ConfigureAwait(false))
+        {
+            KillProcess();
+            AppServices.Log?.Warn("加速", "加速组件处于解密模式，已停止使用（本软件只做透传）");
+            return Fail(ProxyFailureKind.StartTimeout, "加速组件配置异常，已停止使用", enableSystemPac);
+        }
+
         var health = new ProxyHealth
         {
             Status = enableSystemPac ? ProxyStatus.RunningSystem : ProxyStatus.RunningProcess,
@@ -429,6 +442,34 @@ internal sealed class GitPortService : IGitPortService
         catch (Exception)
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 向加速组件的管理口确认它处于「纯透传」模式。
+    /// <para>
+    /// 返回 <c>false</c> 表示组件自报正在 MITM，调用方必须停掉它：
+    /// 本软件不安装任何根证书，解密模式只会让客户端 TLS 失败，同时违背"不解密用户流量"的承诺。
+    /// 读取失败（接口不可达/字段缺失）时按"通过"处理——透传由 settings.json 的 mitm=false 保证，
+    /// 不能因为读不到状态就让整个加速不可用。
+    /// </para>
+    /// </summary>
+    private static async Task<bool> EnsurePassthroughOnlyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(4) };
+            var json = await client
+                .GetStringAsync($"http://127.0.0.1:{UpdateDefaults.ProxyWebUiPort}/api/status", cancellationToken)
+                .ConfigureAwait(false);
+
+            using var document = JsonDocument.Parse(json);
+            return !(document.RootElement.TryGetProperty("mitm", out var mitm)
+                     && mitm.ValueKind == JsonValueKind.True);
+        }
+        catch (Exception)
+        {
+            return true;
         }
     }
 

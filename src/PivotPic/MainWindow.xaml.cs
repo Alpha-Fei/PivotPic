@@ -156,6 +156,9 @@ public partial class MainWindow : Window
         AppServices.Tray?.ShowUpdateBadge(hasUpdate ? release?.TagName : null);
     }
 
+    /// <summary>更新弹窗是否已打开，避免模态窗叠加。</summary>
+    private bool _updateDialogOpen;
+
     /// <summary>打开「更新详情」模态弹窗。已经打开时直接前置，不叠两个窗。</summary>
     public void OpenUpdateDialog(ReleaseInfo release)
     {
@@ -164,6 +167,13 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        if (_updateDialogOpen)
+        {
+            return;
+        }
+
+        _updateDialogOpen = true;
 
         try
         {
@@ -176,6 +186,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _updateDialogOpen = false;
             RefreshUpdateBanner();
         }
     }

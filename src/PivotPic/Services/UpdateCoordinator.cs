@@ -34,6 +34,7 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
     private DateTime _lastAttemptUtc = DateTime.MinValue;
     private bool _checking;
     private bool _dismissed;
+    private bool _promptRaised;
     private bool _disposed;
 
     public UpdateCoordinator(IUpdateService updates)
@@ -253,9 +254,11 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
 
                 // 静默检查由 UpdateAvailable 事件驱动提示；这里兜底一次，
                 // 防止服务实现变了之后提示静默消失。
+                // NotifyFound 会碰 UI 对象，必须回到 UI 线程（否则每轮静默检查都会
+                // 留一条"调用线程无法访问此对象"的告警）。
                 if (trigger == UpdateCheckTrigger.Silent)
                 {
-                    NotifyFound(release);
+                    OnUi(() => NotifyFound(release));
                 }
             }
             else if (_outcome == UpdateCheckOutcome.UpToDate)
@@ -304,7 +307,7 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
         });
     }
 
-    /// <summary>发现新版本：刷新状态，必要时抛事件让主窗弹窗。</summary>
+    /// <summary>发现新版本：刷新状态，必要时抛事件让主窗弹窗（每次会话只弹一次）。</summary>
     private void NotifyFound(ReleaseInfo release)
     {
         RaiseStateChanged();
@@ -315,6 +318,15 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
             AppServices.Log?.Info("更新", $"版本 {release.TagName} 已被用户跳过，仅保留入口");
             return;
         }
+
+        // 事件驱动与兜底两条路径都可能走到这里，只让第一次真正弹窗，
+        // 否则用户会看到叠起来的两个模态窗。
+        if (_promptRaised)
+        {
+            return;
+        }
+
+        _promptRaised = true;
 
         try
         {
