@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputType>Library</OutputType>
+    <AssemblyName>ServiceCompile</AssemblyName>
+    <NoWarn>$(NoWarn);CS8618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\PivotPic\Models\**\*.cs" />
+    <Compile Include="..\..\src\PivotPic\Services\**\*.cs" />
+    <Compile Include="..\..\src\PivotPic\ViewModels\**\*.cs" />
+    <!-- PacService 通过 Shared.ProxyCleanup 复用卸载端的还原逻辑，必须一起编译 -->
+    <Compile Include="..\..\src\Shared\ProxyCleanup.cs" />
+    <!--
+      TrayService 依赖 WinForms NotifyIcon、Interop.TrayIconFactory 与 App 外壳，
+      不属于"纯服务层"，因此从独立编译验证工程中排除，由主工程负责编译。
+    -->
+    <Compile Remove="..\..\src\PivotPic\Services\TrayService.cs" />
+  </ItemGroup>
+
+</Project>

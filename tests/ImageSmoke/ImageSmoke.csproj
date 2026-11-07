@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <RootNamespace>PivotPic.ImageSmoke</RootNamespace>
+    <AssemblyName>ImageSmoke</AssemblyName>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      不引用 ..\ServiceCompile\ServiceCompile.csproj：该工程用通配符链接 Services\**\*.cs，
+      TrayService.cs 引用了 PivotPic.Interop 与 App（这两者都不在其链接范围内），会直接编译失败。
+      这里改为只链接本测试真正需要的源文件，并显式排除 TrayService，保持与主项目同一份源码。
+    -->
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\src\PivotPic\Models\**\*.cs" />
+    <Compile Include="..\..\src\PivotPic\Services\**\*.cs"
+             Exclude="..\..\src\PivotPic\Services\TrayService.cs" />
+    <!-- 与主项目同一份共享文件：PacService 依赖它 -->
+    <Compile Include="..\..\src\Shared\ProxyCleanup.cs" />
+  </ItemGroup>
+
+</Project>

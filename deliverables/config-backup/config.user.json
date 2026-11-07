@@ -1,0 +1,36 @@
+{
+  "SchemaVersion": 1,
+  "Folders": [
+    {
+      "Id": "user-main",
+      "Path": "C://Users//Mr.Li//Desktop//{MM-DD}//喷绘",
+      "Enabled": true,
+      "IncludeSubdirectories": true,
+      "ResolutionCheckEnabled": true,
+      "Threshold": 500,
+      "Metric": 0
+    }
+  ],
+  "MonitoringEnabled": true,
+  "RotationMode": 0,
+  "RotateDirection": 0,
+  "CloseAction": 0,
+  "AutoStart": false,
+  "ShowProgressPopup": true,
+  "FirstRun": false,
+  "Theme": 0,
+  "WindowWidth": 1000,
+  "WindowHeight": 680,
+  "WindowLeft": null,
+  "WindowTop": null,
+  "MaxPixels": 120000000,
+  "SupportedExtensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "gitport",
+  "component": "GitHub 加速代理（内置，对用户透明）",
+  "binary": "gitport-github.exe",
+  "version": "0.5.4",
+  "sizeBytes": 7340544,
+  "sha256": "50c2fcb185cad500c720abad5ba13a7354dd71c6a90a193615f502ea0e7763a2",
+  "license": "Apache-2.0",
+  "licenseFile": "LICENSE-APACHE-2.0.txt",
+  "noticeFile": "NOTICE.txt",
+  "upstreamRepository": "https://github.com/Alpha-Fei/gitport",
+  "modified": false,
+  "runtimeContract": {
+    "launchArguments": [ "-headless" ],
+    "settings": {
+      "mitm": false,
+      "githubPAC": "controlled-by-host"
+    },
+    "defaultProxyPort": 7810,
+    "listenAddress": "127.0.0.1"
+  }
+}

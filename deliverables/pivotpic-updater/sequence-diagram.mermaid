@@ -1,0 +1,328 @@
+%% ============================================================
+%%  PivotPic v1.3.0 · 内置 GitHub 加速代理与在线自动更新
+%%  关键时序图（4 张）
+%%  对应文档：ARCHITECTURE.md §6.3
+%% ============================================================
+
+
+%% ============================================================
+%% ① 首次开启加速并授权
+%%    触发：设置页打开「网络加速」开关（或「启用增强」按钮）
+%%    关键：授权卡片是 PAC + 根证书的唯一前置门（D3）
+%% ============================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant SP as SettingsPage
+    participant C as UpdateCoordinator
+    participant CFG as ConfigService
+    participant GP as GitPortService
+    participant PAC as PacService
+    participant CERT as CertificateService
+    participant DLG as CertConsentDialog
+
+    U->>SP: 打开「网络加速」开关
+    SP->>CFG: Current.ProxyEnabled = true; SaveDebounced()
+    SP->>C: await SetProxyEnabledAsync(true)
+    C->>C: 取 SemaphoreSlim(1,1) 串行化状态转换
+
+    alt UpdateSetupCompleted == false（首次）
+        C->>DLG: ShowDialog(owner = Shell)
+        Note over DLG: 自绘授权卡片（PRD §5 文案）<br/>① 只对 GitHub 域生效 ② 可随时移除<br/>③ 只在本机运行 ④ 系统 PAC 退出自动还原
+        alt 用户点「同意并启用」
+            DLG-->>C: CertConsentToken.FromUserAction(true)
+            C->>CFG: CertConsent = Granted<br/>UpdateSetupCompleted = true<br/>ProxySystemWide = true
+            C->>GP: await StartAsync(ProxyMode.Mitm)
+            GP->>GP: EnsureBinary(AppPaths.DataRoot\proxy)<br/>（从 {安装目录}\proxy\ 复制 + SHA256 校验）
+            GP->>GP: ProbePorts(7810→7819 / 7811→7819)
+            GP->>GP: PatchSettingsJson(mitm=true, githubPAC=true)<br/>（用 JsonNode 只改这两个键）
+            GP->>GP: Process.Start("-headless -port P -webui W")
+            loop 每 200ms，最多 5s
+                GP->>GP: GET http://127.0.0.1:W/ 就绪探测
+            end
+            GP-->>C: ProxyStatus(Running, Mitm, port, webUi)
+            C->>CFG: ProxyPort / ProxyWebUiPort 回写
+            C-->>SP: ProxyStatusChanged(Running, Mitm)
+
+            C->>PAC: await CaptureBaselineAsync()
+            PAC->>PAC: 读 HKCU\...\Internet Settings\AutoConfigURL
+            PAC->>PAC: 写 {DataRoot}\proxy\pac-backup.json
+            PAC-->>C: true
+
+            C->>CERT: await InstallAsync(token)
+            CERT->>CERT: 解析 proxy\ca.crt（校验 BasicConstraints CA=true）
+            CERT->>CERT: 按指纹查 CurrentUser\Root
+            CERT->>CERT: store.Add(cert)  ← 必须在后台线程（可能弹系统框，见 U1）
+            CERT->>CERT: 关闭后重开 store，按指纹复核
+            alt 复核通过
+                CERT->>CERT: 写 proxy\cert.json（thumbprint/subject/notAfterUtc）
+                CERT-->>C: CertStatus(Trusted)
+                C->>CFG: CertThumbprint = xxx; ProxyMode = Mitm
+                C->>PAC: VerifyAsync(webUiPort) → PacState.Active
+                C-->>SP: Notice("加速已开启（增强模式）")
+            else 被拒 / 被策略阻断 / 复核不通过
+                CERT-->>C: CertStatus(StoreWriteDenied, PP-UPD-1103)
+                C->>GP: await ApplyModeAsync(Passthrough)<br/>（PatchSettings(mitm=false) + Stop + Start）
+                GP-->>C: ProxyStatus(Running, Passthrough)
+                C->>CFG: ProxyMode = Passthrough; CertConsent = Declined
+                C->>PAC: RestoreAsync()（撤销 PAC，回到零系统写入）
+                C-->>SP: Notice("未授权，已使用基础加速") + 黄点 CertPending
+            end
+        else 用户点「暂不启用（仅基础加速）」或关闭 X
+            DLG-->>C: CertConsentToken.Denied
+            C->>CFG: CertConsent = Declined<br/>ProxySystemWide = false<br/>UpdateSetupCompleted = true
+            C->>GP: await StartAsync(Passthrough)
+            GP-->>C: ProxyStatus(Running, Passthrough)
+            C-->>SP: Notice("已使用基础加速（仅本程序）")
+        end
+    else 已走过引导且 CertConsent == Granted
+        C->>GP: await StartAsync(Mitm)  %% 同上，跳过对话框
+        GP-->>C: ProxyStatus(Running, Mitm)
+        C->>CERT: RefreshAsync()（按指纹查，缺失则 CertPending）
+        CERT-->>C: CertStatus(Trusted)
+        C->>PAC: VerifyAsync(webUiPort)
+        PAC-->>C: PacState.Active
+    end
+    C->>C: 释放 SemaphoreSlim
+
+
+%% ============================================================
+%% ② 启动静默检查 → 发现新版本 → 下载 → 校验 → 拉起安装器 → 退出
+%%    关键：ETag 省配额；断点续传抗中断；--wait-pid 解决文件占用
+%% ============================================================
+sequenceDiagram
+    autonumber
+    participant APP as App.OnStartup
+    participant C as UpdateCoordinator
+    participant UPD as UpdateService
+    participant HTTP as ProxyHttpClientProvider
+    participant GH as api.github.com
+    participant FS as 本地文件
+    actor U as 用户
+    participant MW as MainWindow
+    participant DLG as UpdateDialog
+    participant SETUP as 正画安装程序.exe
+
+    APP->>C: _ = InitializeAsync(_appCts.Token)   %% fire-and-forget
+    C->>C: PAC.HealResidualAsync()  %% 上次异常退出残留先还原
+    C->>C: 20s 定时（避开启动高峰，见 §6.1）
+    C->>UPD: CheckAsync(Startup, ct)
+
+    UPD->>HTTP: Get(CurrentRoute)
+    HTTP-->>UPD: HttpClient（Proxy 或 Direct）
+    UPD->>FS: 读 update\latest.etag
+    UPD->>GH: GET /repos/{owner}/{repo}/releases/latest<br/>If-None-Match: W/"abc123"<br/>Accept: application/vnd.github+json<br/>User-Agent: PivotPic/1.2.45
+    alt 304 Not Modified
+        GH-->>UPD: 304
+        UPD->>FS: 读 update\latest.json（缓存）
+        UPD-->>C: UpdateCheckResult(NotModified, IsNewer=false, FromCache=true)
+    else 200 OK
+        GH-->>UPD: 200 + JSON + 新 ETag
+        UPD->>FS: 写 latest.json / latest.etag（原子替换）
+        UPD->>UPD: 解析 + 版本比较（忽略 v 前缀，Major.Minor.Build）
+        UPD->>UPD: 匹配 SetupAsset（宽松规则，见 D5）+ ChecksumsAsset
+        UPD-->>C: UpdateCheckResult(Found, v1.3.0, IsNewer=true)
+    else 403 且 X-RateLimit-Remaining=0
+        GH-->>UPD: 403
+        UPD-->>C: UpdateCheckResult(RateLimited, resetAt)  %% 重置前不再自动重试
+    end
+
+    C->>C: Pending = UpdateAvailability(release, skipped)
+    C->>C: 写 CFG.LastCheckUtc / LastCheckResult
+
+    alt SkippedVersion == 该版本
+        C->>MW: ShowUpdateBanner("发现新版本 v1.3.0（已忽略）· 查看详情")
+        Note over C,MW: 不弹窗（修正 D2 的「稍后」路径）
+    else 未忽略
+        C->>MW: ShowUpdateBanner("发现新版本 v1.3.0")
+        C->>MW: 托盘气泡（一次性 10s）
+        C->>DLG: ShowDialog()（模态，仅此一次）
+        Note over DLG: 版本对比 / 发布日期 / 更新说明<br/>包大小 / 加速来源 / 按钮
+        U->>DLG: 点「立即更新」
+        DLG->>C: DownloadAsync(progress, cts)
+        C->>UPD: DownloadAndVerifyAsync(release, progress, ct)
+
+        UPD->>FS: 预检可用空间 ≥ size × 2
+        alt 空间不足
+            UPD-->>DLG: UpdateFailedException(PP-UPD-1401)
+            DLG-->>U: 「磁盘空间不足（需要 286 MB）」
+        else 空间充足
+            loop attempt = Proxy → Mirror → Direct（单源最多重试 1 次，退避 2s/5s）
+                UPD->>HTTP: Get(该源对应 route)
+                UPD->>GH: GET asset（首次全量 / 同源重试带 Range: bytes=N-）
+                GH-->>UPD: 200 / 206 + 字节流
+                UPD->>FS: 流式追加写 *.part（81920 缓冲）
+                UPD-->>DLG: IProgress<DownloadProgress>（≥100ms 节流）<br/>percent / speed / eta / SourceText
+                Note over DLG: 进度条 + 已下载/总量 + 速度 + 「内置加速/第三方加速/直连」
+            end
+            UPD->>UPD: Stage = Verifying
+            UPD->>FS: 计算 SHA256
+            alt 与 checksums.txt 匹配（或无 checksums.txt → Verified=false 记 Warn）
+                UPD->>FS: .part → 正画-Setup-1.3.0.exe；写 update\pending.json
+                UPD-->>C: PreparedPackage(Verified)
+                C->>C: Stage = ReadyToInstall
+                U->>DLG: 点「安装」
+                DLG->>C: 触发安装
+                C->>UPD: LaunchInstallerAsync(pkg)
+                UPD->>SETUP: Process.Start(pkg, "--wait-pid {当前PID}")
+                SETUP->>SETUP: WaitForProcessExit(hostPid, 20s)
+                UPD-->>C: true
+                C->>MW: RequestExit()
+                MW->>C: await PrepareForExitAsync(6s)
+                Note over C: ① 取消下载/检查 ② 停代理（优雅→Kill）<br/>③ 还原 PAC ④ 清 .part 残留
+                MW->>APP: Application.Current.Shutdown(0)
+                SETUP->>SETUP: 宿主已退出 → 解压载荷 → 覆盖安装
+            else 校验不符
+                UPD->>FS: 删除 .part 与目标文件
+                UPD-->>DLG: UpdateFailedException(PP-UPD-1403)
+                DLG-->>U: 「安装包校验失败，已删除」+ [重试]
+                Note over UPD,DLG: 连续 2 次失败 → 只留「浏览器打开 Release 页」
+            end
+        end
+    end
+
+
+%% ============================================================
+%% ③ 关闭开关 / 退出程序的清理顺序（顺序不可调整，PRD §3.4）
+%% ============================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant SP as SettingsPage / 托盘
+    participant MW as MainWindow
+    participant C as UpdateCoordinator
+    participant UPD as UpdateService
+    participant GP as GitPortService
+    participant PAC as PacService
+    participant CFG as ConfigService
+
+    rect rgb(240, 248, 255)
+    Note over U,CFG: 场景 A · 用户关闭「网络加速」开关
+    U->>SP: 关闭开关
+    SP->>CFG: ProxyEnabled = false; SaveDebounced()
+    SP->>C: await SetProxyEnabledAsync(false)
+    C->>UPD: CancelDownload()（若有进行中）
+    C->>GP: CancelPendingRestart()（取消挂起的崩溃重启）
+    C->>GP: await StopAsync(ct)
+    GP->>GP: ① POST 管理接口（带 X-GitPort-Request: 1）
+    GP->>GP: ② WaitForExit ≤ 3s
+    alt 3s 内退出
+        GP->>GP: Log Info ProxyStop
+    else 超时
+        GP->>GP: Kill(entireProcessTree: true) + Log Warn ProxyKill
+    end
+    GP-->>C: ProxyStatus(Off)
+    C->>PAC: await RestoreAsync()
+    PAC->>PAC: 读当前 AutoConfigURL
+    alt 仍指向 127.0.0.1:78xx
+        PAC->>PAC: 写回 pac-backup.json 快照（或删除该值）
+        PAC->>PAC: 读回复核 → PacState.Inactive
+        PAC->>PAC: 删除 pac-backup.json
+    else 已被第三方改走
+        PAC->>PAC: 不动注册表，Log Warn PacOverride
+    end
+    PAC-->>C: PacState.Inactive
+    C->>CFG: ProxyMode = Off; SaveDebounced()
+    C-->>SP: ProxyStatusChanged(Off) → 灰点「未启用」
+    Note over C,CFG: 注意：**不**自动移除证书（避免反复授权，PRD §3.1）
+    end
+
+    rect rgb(255, 245, 240)
+    Note over U,CFG: 场景 B · 退出程序（托盘退出 / 更新安装前）
+    U->>MW: 托盘「退出」
+    MW->>MW: _exiting = true; PersistWindowPlacement(); Config.SaveNow()
+    MW->>C: await PrepareForExitAsync(cts 6s)
+    C->>UPD: ① _downloadCts.Cancel() + _checkCts.Cancel()
+    C->>UPD: await 下载任务 ≤ 1s（.part 保留，下次覆盖）
+    C->>GP: ② await StopAsync()  → 优雅退出 / 3s 后 Kill
+    C->>PAC: ③ await RestoreAsync() → 读回复核
+    C->>UPD: ④ CleanupTemp(keep=false)（只清本次会话产生的 .part）
+    C-->>MW: 完成（≤ 3s 典型）
+    MW->>MW: Application.Current.Shutdown(0)
+    Note over MW,C: App.OnExit 保留兜底：PrepareForExitAsync.Wait(4s)<br/>用户从其它路径退出时也能收尾（幂等）
+    end
+
+    rect rgb(245, 255, 245)
+    Note over U,CFG: 场景 C · 进程被强杀（任务管理器），下次启动自愈
+    U->>MW: 任务管理器结束进程
+    Note over GP,PAC: gitport 进程成孤儿；PAC 残留；证书仍在
+    U->>MW: 再次启动
+    MW->>C: InitializeAsync()
+    C->>GP: KillOrphans()（按路径匹配 {DataRoot}\proxy\gitport-github.exe）
+    C->>PAC: HealResidualAsync()
+    PAC->>PAC: pac-backup.json 存在且当前 PAC 指向我们 → 还原
+    PAC-->>C: PacState.Inactive（无感）
+    end
+
+
+%% ============================================================
+%% ④ 代理崩溃重启与降级
+%%    关键：Exited + 心跳双检测；≤2 次重启（5s/15s）；超限降级直连
+%% ============================================================
+sequenceDiagram
+    autonumber
+    participant OS as Windows
+    participant GP as GitPortService
+    participant C as UpdateCoordinator
+    participant HTTP as ProxyHttpClientProvider
+    participant UPD as UpdateService
+    participant PAC as PacService
+    participant UI as SettingsPage / 托盘
+
+    Note over GP: 稳态：Running，PeriodicTimer 每 30s 心跳
+    loop 每 30s
+        GP->>GP: GET http://127.0.0.1:{webUiPort}/
+        alt 200
+            GP->>GP: missCount = 0
+            GP->>PAC: VerifyAsync(webUiPort)（顺手查 PAC 是否被覆盖）
+        else 超时 / 连接失败
+            GP->>GP: missCount++（连续 3 次 → 判定 HealthLost）
+        end
+    end
+
+    rect rgb(255, 240, 240)
+    Note over OS,UI: 路径 A · 进程崩溃（Exited 事件）
+    OS-->>GP: Process.Exited（code != 0）
+    GP->>GP: 若 _intentionalStop == true → 忽略（我们自己停的）
+    GP->>GP: Status = Failed(PP-UPD-1005 或 CrashCode)
+    GP->>C: StatusChanged(Failed)
+    C->>UI: 黄点→红点「加速中断，正在重启…」
+    GP->>GP: restartAttempts = 1
+    GP->>GP: await Task.Delay(5s)（可被 CancelPendingRestart 打断）
+    GP->>GP: StartAsync(上次的 mode)
+    alt 启动成功
+        GP->>GP: Status = Running；稳定 60s 后 restartAttempts = 0
+        GP->>C: StatusChanged(Running)
+        C->>UI: 绿点恢复；不打扰用户
+    else 再次崩溃
+        GP->>GP: restartAttempts = 2 → Delay(15s) → StartAsync
+        alt 第三次成功
+            GP->>C: StatusChanged(Running)
+        else 第三次仍失败
+            GP->>GP: Status = Failed(PP-UPD-1006 CrashLoop)
+            GP->>C: StatusChanged(Failed)
+            C->>HTTP: Invalidate(null) → CurrentRoute = Direct
+            C->>UPD: 后续检查/下载自动走直连
+            C->>PAC: RestoreAsync()（不再接管系统流量）
+            C->>UI: Notice("加速反复退出，已改用直连") —— 仅一次
+            C->>UI: 红点 +「重启」链接（用户手动重试，重置计数）
+        end
+    end
+    end
+
+    rect rgb(255, 250, 235)
+    Note over GP,UI: 路径 B · 心跳连续 3 次丢失（进程假死，未退出）
+    GP->>GP: missCount == 3 → Status = Failed(PP-UPD-1005 HealthLost)
+    GP->>GP: 先 Kill(entireProcessTree) 清掉假死进程
+    GP->>GP: 走与路径 A 相同的重启序列（5s / 15s / 降级）
+    end
+
+    rect rgb(240, 245, 255)
+    Note over GP,UI: 路径 C · 启动失败（二进制/端口）
+    GP->>GP: BinaryMissing → 立刻 Failed(PP-UPD-1001)，不重启（重启无意义）
+    GP->>GP: PortsExhausted → 立刻 Failed(PP-UPD-1003)，不重启
+    GP->>C: StatusChanged(Failed)
+    C->>HTTP: CurrentRoute = Direct
+    C->>UI: 红点「加速组件缺失 / 端口被占用，已改用直连」+ 一次 Toast
+    Note over C,UI: 主功能（检查更新/下载）继续可用，只是不走加速
+    end

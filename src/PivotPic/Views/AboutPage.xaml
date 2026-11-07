@@ -1,0 +1,153 @@
+<UserControl x:Class="PivotPic.Views.AboutPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Transparent"
+             FontFamily="{DynamicResource Font.UI}"
+             DataContext="{Binding RelativeSource={RelativeSource Self}}">
+
+    <!-- 关于页：居中品牌信息 + 特性清单 + 协议行 -->
+    <Grid Margin="24,20,24,20">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420">
+
+            <Image Width="72" Height="72" HorizontalAlignment="Center"
+                   Source="{DynamicResource Image.Brand}"
+                   RenderOptions.BitmapScalingMode="HighQuality" />
+
+            <TextBlock Text="正画 PivotPic" Margin="0,20,0,0" HorizontalAlignment="Center"
+                       Style="{StaticResource Typo.Title}" FontSize="20" />
+
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0" HorizontalAlignment="Center">
+                <TextBlock Text="{Binding VersionText}"
+                           Style="{StaticResource Typo.Mono}"
+                           VerticalAlignment="Center" />
+
+                <!-- 有更新时才出现的徽标：点击直接进更新详情 -->
+                <Button x:Name="BtnUpdateBadge"
+                        Margin="10,0,0,0"
+                        Style="{StaticResource Btn.Ghost}"
+                        Padding="8,2"
+                        Visibility="Collapsed"
+                        ToolTip="发现新版本，点击查看"
+                        Click="OnUpdateBadgeClick">
+                    <Border Background="{DynamicResource Accent.Soft}" CornerRadius="999" Padding="8,1">
+                        <TextBlock Text="有更新"
+                                   FontFamily="{DynamicResource Font.UI}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource Accent}" />
+                    </Border>
+                </Button>
+            </StackPanel>
+
+            <TextBlock Text="正画是一款轻量的图片自动化工具：横版图片落入指定目录后自动转为竖版，全程静默运行在系统托盘。"
+                       Margin="0,18,0,0" HorizontalAlignment="Center"
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Style="{StaticResource Typo.Secondary}" />
+
+            <!-- 特性列表 -->
+            <StackPanel Margin="0,26,0,0" HorizontalAlignment="Left">
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Path Width="14" Height="14" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Check}"
+                          Stroke="{DynamicResource Success}" />
+                    <TextBlock Text="自动识别横版图片，旋转为竖版" Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Body}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Path Width="14" Height="14" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Check}"
+                          Stroke="{DynamicResource Success}" />
+                    <TextBlock Text="多文件夹同时监控，新图片秒级处理" Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Body}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Path Width="14" Height="14" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Check}"
+                          Stroke="{DynamicResource Success}" />
+                    <TextBlock Text="路径支持日期占位符，按天自动组织目录" Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Body}" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal">
+                    <Path Width="14" Height="14" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Check}"
+                          Stroke="{DynamicResource Success}" />
+                    <TextBlock Text="分辨率低于阈值即时提醒，不漏低清图" Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Body}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- 开发者信息 -->
+            <Border Margin="0,26,0,0" Padding="16,14"
+                    CornerRadius="10"
+                    Background="{DynamicResource Bg.Card}"
+                    BorderBrush="{DynamicResource Stroke.Medium}" BorderThickness="1">
+                <StackPanel>
+                    <TextBlock Text="开发者" Style="{StaticResource Typo.Secondary}"
+                               Foreground="{DynamicResource Text.Tertiary}" />
+                    <TextBlock Text="鹏飞广告·饺子" Margin="0,6,0,0"
+                               Style="{StaticResource Typo.Body}" FontWeight="SemiBold" />
+                    <TextBlock Text="2382948541@qq.com" Margin="0,2,0,0"
+                               Style="{StaticResource Typo.Mono}" FontSize="12"
+                               Foreground="{DynamicResource Text.Secondary}" />
+                </StackPanel>
+            </Border>
+
+            <!-- 赞助链接 -->
+            <Button Margin="0,12,0,0" HorizontalAlignment="Center"
+                    Cursor="Hand" Click="OnSponsorClick"
+                    ToolTip="感谢支持开发者">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Background">
+                            <Setter.Value>
+                                <SolidColorBrush Color="#FFFFFF" Opacity="0.05" />
+                            </Setter.Value>
+                        </Setter>
+                        <Setter Property="BorderBrush" Value="{DynamicResource Stroke.Medium}" />
+                        <Setter Property="BorderThickness" Value="1" />
+                        <Setter Property="Foreground" Value="{DynamicResource Accent}" />
+                        <Setter Property="FontFamily" Value="{DynamicResource Font.UI}" />
+                        <Setter Property="FontSize" Value="13" />
+                        <Setter Property="Padding" Value="18,8" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="8">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          Margin="{TemplateBinding Padding}" />
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Button.Style>
+                <StackPanel Orientation="Horizontal">
+                    <Path Width="14" Height="14" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Heart}"
+                          Stroke="{DynamicResource Accent}" />
+                    <TextBlock Text="赞助支持" Margin="6,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+
+            <TextBlock Text="按 MIT 协议开源 · © 2026" Margin="0,22,0,0"
+                       HorizontalAlignment="Center"
+                       Style="{StaticResource Typo.Secondary}"
+                       Foreground="{DynamicResource Text.Tertiary}" />
+        </StackPanel>
+    </Grid>
+</UserControl>

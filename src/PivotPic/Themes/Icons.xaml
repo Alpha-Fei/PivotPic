@@ -1,0 +1,112 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        全矢量图标系统。
+        所有图标统一 24×24 视框、1.5px 描边、圆头圆角连接（见下方 IconPath 样式）。
+        使用时只引用几何，颜色由 Stroke 绑定语义画刷决定，绝不为不同颜色复制几何。
+
+        用法：
+        <Path Style="{StaticResource IconPath}" Data="{DynamicResource Icon.Folder}" />
+    -->
+
+    <Style x:Key="IconPath" TargetType="Path">
+        <Setter Property="Stretch" Value="Uniform" />
+        <Setter Property="StrokeThickness" Value="1.5" />
+        <Setter Property="StrokeLineJoin" Value="Round" />
+        <Setter Property="StrokeStartLineCap" Value="Round" />
+        <Setter Property="StrokeEndLineCap" Value="Round" />
+        <Setter Property="Stroke" Value="{DynamicResource Icon.Primary}" />
+        <Setter Property="Fill" Value="Transparent" />
+        <Setter Property="SnapsToDevicePixels" Value="False" />
+        <Setter Property="UseLayoutRounding" Value="False" />
+    </Style>
+
+
+    <!-- ============================================================ -->
+    <!-- 品牌标识：pivopiv 矢量 logo（紫底 + 白色 P + 薄荷绿状态点）    -->
+    <!-- ============================================================ -->
+
+    <DrawingImage x:Key="Image.Brand">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <GeometryDrawing Brush="#5546E8">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="0,0,128,128" RadiusX="29" RadiusY="29" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#FFFFFF">
+                    <GeometryDrawing.Geometry>
+                        <PathGeometry FillRule="EvenOdd"
+                                      Figures="M 34 99 L 34 46 C 34 30 46 20 64 20 C 83 20 96 31 96 48 C 96 65 83 76 65 76 L 54 76 L 54 91 Q 54 99 46 99 Z M 54 57 L 65 57 C 73 57 77 54 77 48 C 77 42 73 39 65 39 C 58 39 54 42 54 48 Z" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="#BDF9CF">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="86,90" RadiusX="10" RadiusY="10" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <!-- 单色符号：用于空态这类需要跟主题色走的大尺寸场景 -->
+    <DrawingImage x:Key="Image.BrandSymbol">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <GeometryDrawing Brush="{DynamicResource Accent}">
+                    <GeometryDrawing.Geometry>
+                        <PathGeometry FillRule="EvenOdd"
+                                      Figures="M 34 99 L 34 46 C 34 30 46 20 64 20 C 83 20 96 31 96 48 C 96 65 83 76 65 76 L 54 76 L 54 91 Q 54 99 46 99 Z M 54 57 L 65 57 C 73 57 77 54 77 48 C 77 42 73 39 65 39 C 58 39 54 42 54 48 Z" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+                <GeometryDrawing Brush="{DynamicResource Accent}">
+                    <GeometryDrawing.Geometry>
+                        <EllipseGeometry Center="86,90" RadiusX="10" RadiusY="10" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <!-- ============ 导航 ============ -->
+    <StreamGeometry x:Key="Icon.Monitor">M3.5,7.5 A2,2 0 0 1 5.5,5.5 L9,5.5 L11,8 L18.5,8 A2,2 0 0 1 20.5,10 L20.5,17 A2,2 0 0 1 18.5,19 L5.5,19 A2,2 0 0 1 3.5,17 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Settings">M12,15 A3,3 0 1 0 12,9 A3,3 0 1 0 12,15 M12,2.8 L13.1,5.4 L15.9,5.9 L17.8,3.9 L20.1,6.2 L18.1,8.1 L18.6,10.9 L21.2,12 L18.6,13.1 L18.1,15.9 L20.1,17.8 L17.8,20.1 L15.9,18.1 L13.1,18.6 L12,21.2 L10.9,18.6 L8.1,18.1 L6.2,20.1 L3.9,17.8 L5.9,15.9 L5.4,13.1 L2.8,12 L5.4,10.9 L5.9,8.1 L3.9,6.2 L6.2,3.9 L8.1,5.9 L10.9,5.4 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Log">M5,4.5 A1.5,1.5 0 0 1 6.5,3 L17.5,3 A1.5,1.5 0 0 1 19,4.5 L19,19.5 A1.5,1.5 0 0 1 17.5,21 L6.5,21 A1.5,1.5 0 0 1 5,19.5 Z M8.5,8 L15.5,8 M8.5,12 L15.5,12 M8.5,16 L12.5,16</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Info">M12,21 A9,9 0 1 0 12,3 A9,9 0 1 0 12,21 M12,11 L12,16.5 M12,7.6 L12,7.7</StreamGeometry>
+
+    <!-- ============ 窗口控制 ============ -->
+    <StreamGeometry x:Key="Icon.Minimize">M6,12 L18,12</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Maximize">M6.5,6.5 L17.5,6.5 L17.5,17.5 L6.5,17.5 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Restore">M8.5,8.5 L17.5,8.5 L17.5,17.5 L8.5,17.5 Z M6,15.5 L6,6.5 L15,6.5</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Close">M7,7 L17,17 M17,7 L7,17</StreamGeometry>
+
+    <!-- ============ 操作 ============ -->
+    <StreamGeometry x:Key="Icon.Plus">M12,6 L12,18 M6,12 L18,12</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Trash">M4.5,7 L19.5,7 M9.5,7 L9.5,4.8 A0.8,0.8 0 0 1 10.3,4 L13.7,4 A0.8,0.8 0 0 1 14.5,4.8 L14.5,7 M6.5,7 L7.4,19.2 A1.2,1.2 0 0 0 8.6,20.3 L15.4,20.3 A1.2,1.2 0 0 0 16.6,19.2 L17.5,7 M10.2,10.8 L10.2,16.6 M13.8,10.8 L13.8,16.6</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Target">M12,20 A8,8 0 1 0 12,4 A8,8 0 1 0 12,20 M12,15 A3,3 0 1 0 12,9 A3,3 0 1 0 12,15 M12,2 L12,5 M12,19 L12,22 M2,12 L5,12 M19,12 L22,12</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Copy">M8.5,8.5 L18,8.5 A1.5,1.5 0 0 1 19.5,10 L19.5,19.5 A1.5,1.5 0 0 1 18,21 L8.5,21 A1.5,1.5 0 0 1 7,19.5 L7,10 A1.5,1.5 0 0 1 8.5,8.5 M5,15.5 L5,4.5 A1.5,1.5 0 0 1 6.5,3 L15.5,3</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Edit">M4,20 L4,15.6 L15.6,4 L20,8.4 L8.4,20 Z M13.4,6.2 L17.8,10.6</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Search">M11,18 A7,7 0 1 0 11,4 A7,7 0 1 0 11,18 M16,16 L20.5,20.5</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Filter">M3.5,5 L20.5,5 L14,12.8 L14,19.5 L10,17.2 L10,12.8 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Check">M5,12.5 L9.8,17.3 L19,7.5</StreamGeometry>
+    <StreamGeometry x:Key="Icon.ChevronRight">M9.5,6 L15.5,12 L9.5,18</StreamGeometry>
+    <StreamGeometry x:Key="Icon.More">M6,12 L6.1,12 M12,12 L12.1,12 M18,12 L18.1,12</StreamGeometry>
+
+    <!-- ============ 业务语义 ============ -->
+    <StreamGeometry x:Key="Icon.Heart">M12,21 C12,21 4,14.5 4,8.5 C4,5.5 6.5,4 8.5,4 C10,4 11.5,5 12,6 C12.5,5 14,4 15.5,4 C17.5,4 20,5.5 20,8.5 C20,14.5 12,21 12,21 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Folder">M3.5,7.5 A2,2 0 0 1 5.5,5.5 L9,5.5 L11,8 L18.5,8 A2,2 0 0 1 20.5,10 L20.5,17 A2,2 0 0 1 18.5,19 L5.5,19 A2,2 0 0 1 3.5,17 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.FolderPlus">M3.5,7.5 A2,2 0 0 1 5.5,5.5 L9,5.5 L11,8 L18.5,8 A2,2 0 0 1 20.5,10 L20.5,17 A2,2 0 0 1 18.5,19 L5.5,19 A2,2 0 0 1 3.5,17 Z M12,10.5 L12,16 M9.2,13.2 L14.8,13.2</StreamGeometry>
+    <StreamGeometry x:Key="Icon.FolderTree">M3.5,5.5 A1.5,1.5 0 0 1 5,4 L8,4 L9.5,6 L15,6 A1.5,1.5 0 0 1 16.5,7.5 L16.5,10 L3.5,10 Z M7.5,13 L20.5,13 A1.5,1.5 0 0 1 22,14.5 L22,19.5 A1.5,1.5 0 0 1 20.5,21 L9.5,21 A1.5,1.5 0 0 1 8,19.5 L8,15.5 M16.5,10 L16.5,13</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Resize">M4,9.5 L4,6.5 A1.5,1.5 0 0 1 5.5,5 L19,5 A1.5,1.5 0 0 1 20.5,6.5 L20.5,9.5 M9,12 L15,12 M9,16 L13,16 M9,20 L11,20</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Rotate">M20.2,12.5 A8.2,8.2 0 1 1 16.6,5.2 M16.2,2.2 L16.6,5.2 L13.6,5.9</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Pause">M9.5,6 L9.5,18 M14.5,6 L14.5,18</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Play">M8,5.5 L18.5,12 L8,18.5 Z</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Warning">M12,4 L21,19.5 L3,19.5 Z M12,10 L12,14.5 M12,17.2 L12,17.3</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Sun">M12,16.2 A4.2,4.2 0 1 0 12,7.8 A4.2,4.2 0 1 0 12,16.2 M12,2.5 L12,4.5 M12,19.5 L12,21.5 M2.5,12 L4.5,12 M19.5,12 L21.5,12 M5.3,5.3 L6.7,6.7 M17.3,17.3 L18.7,18.7 M18.7,5.3 L17.3,6.7 M6.7,17.3 L5.3,18.7</StreamGeometry>
+    <StreamGeometry x:Key="Icon.Moon">M20,14.5 A8.5,8.5 0 0 1 9.5,4 A8.5,8.5 0 1 0 20,14.5 Z</StreamGeometry>
+
+    <!-- ============ 空态插画（三个几何图形组合） ============ -->
+    <StreamGeometry x:Key="Art.Empty">M4,7 L9.5,7 L9.5,17 L4,17 Z M13,4.5 L20,4.5 L20,19.5 L13,19.5 Z M9.5,11 L13,11 M9.5,13.5 L13,13.5</StreamGeometry>
+
+</ResourceDictionary>

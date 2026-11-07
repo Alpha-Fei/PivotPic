@@ -1,0 +1,520 @@
+%% ============================================================
+%%  PivotPic v1.3.0 · 类图（数据模型 + 服务）
+%%  对应文档：ARCHITECTURE.md §12
+%%  说明：仅描述「新增」与「被修改」的类型；既有 9 个服务未画出。
+%%  约定：$ 结尾 = static；<|.. = 实现；--> = 直接依赖；..> = 使用
+%% ============================================================
+classDiagram
+    direction TB
+
+    %% ---------------- 枚举 ----------------
+    class ProxyMode {
+        <<enumeration>>
+        Off
+        Passthrough
+        Mitm
+    }
+    class CertConsent {
+        <<enumeration>>
+        None
+        Granted
+        Declined
+    }
+    class ProxyState {
+        <<enumeration>>
+        Off
+        Starting
+        Running
+        CertPending
+        Failed
+    }
+    class ProxyFailureKind {
+        <<enumeration>>
+        None
+        BinaryMissing
+        BinaryNotWritable
+        PortsExhausted
+        StartTimeout
+        HealthLost
+        CrashLoop
+        PacWriteFailed
+        PacOverridden
+        Unknown
+    }
+    class CertFailure {
+        <<enumeration>>
+        None
+        NotRequested
+        NoConsent
+        CaFileMissing
+        CaFileInvalid
+        NotCaCertificate
+        StoreWriteDenied
+        ThumbprintMismatch
+        RemoveFailed
+    }
+    class PacState {
+        <<enumeration>>
+        Unknown
+        Inactive
+        Active
+        Overridden
+        RestoreFailed
+    }
+    class UpdateCheckStatus {
+        <<enumeration>>
+        Ok
+        Latest
+        Found
+        NotModified
+        RateLimited
+        NetworkError
+        HttpError
+        ParseError
+        Disabled
+        InProgress
+    }
+    class UpdateStage {
+        <<enumeration>>
+        Idle
+        Checking
+        Available
+        Downloading
+        Verifying
+        ReadyToInstall
+        Launching
+        Cancelled
+        Failed
+    }
+    class DownloadSource {
+        <<enumeration>>
+        Proxy
+        Mirror
+        Direct
+    }
+    class ProxyRoute {
+        <<enumeration>>
+        Proxy
+        Direct
+    }
+    class UpdateCheckTrigger {
+        <<enumeration>>
+        Startup
+        Periodic
+        Manual
+        AfterProxyReady
+    }
+
+    %% ---------------- 值对象 / DTO ----------------
+    class ProxyStatus {
+        <<record>>
+        +ProxyState State
+        +ProxyMode Mode
+        +int ProxyPort
+        +int WebUiPort
+        +ProxyFailureKind Failure
+        +string Detail
+        +int RestartAttempts
+        +bool PacActive
+        +DateTime TimestampUtc
+        +ProxyStatus Off$
+        +bool IsUsable
+        +string DisplayText
+    }
+    class CertStatus {
+        <<record>>
+        +bool Trusted
+        +string Thumbprint
+        +string Subject
+        +CertFailure Failure
+        +string Detail
+        +CertStatus Unknown$
+    }
+    class CertConsentToken {
+        <<struct>>
+        +bool Granted
+        +CertConsentToken Denied$
+        +CertConsentToken FromUserAction(bool agreed)$
+    }
+    class ReleaseAsset {
+        <<record>>
+        +string Name
+        +long Size
+        +string DownloadUrl
+    }
+    class ReleaseInfo {
+        <<record>>
+        +string TagName
+        +Version Version
+        +DateTimeOffset PublishedAtUtc
+        +string Body
+        +IReadOnlyList~ReleaseAsset~ Assets
+        +ReleaseAsset SetupAsset
+        +ReleaseAsset ChecksumsAsset
+        +string VersionText
+        +string PublishedText
+        +string SizeText
+    }
+    class UpdateCheckResult {
+        <<record>>
+        +UpdateCheckStatus Status
+        +ReleaseInfo Release
+        +bool IsNewer
+        +string Message
+        +TimeSpan RateLimitReset
+        +bool FromCache
+        +string ResultToken
+    }
+    class DownloadProgress {
+        <<record>>
+        +long BytesReceived
+        +long TotalBytes
+        +double BytesPerSecond
+        +TimeSpan Eta
+        +DownloadSource Source
+        +int Attempt
+        +double Percent
+        +string SpeedText
+        +string SourceText
+    }
+    class PreparedPackage {
+        <<record>>
+        +string FilePath
+        +string Sha256
+        +long Size
+        +bool Verified
+    }
+    class PacSnapshot {
+        <<record>>
+        +string AutoConfigUrl
+        +string ProxyEnable
+        +string ProxyServer
+        +DateTime CapturedUtc
+    }
+    class UpdateAvailability {
+        <<record>>
+        +ReleaseInfo Release
+        +bool Skipped
+    }
+    class UpdateFailedException {
+        <<exception>>
+        +string Code
+    }
+    class UpdateErrorCodes {
+        <<static>>
+        +string BinaryMissing$
+        +string PortsExhausted$
+        +string CertStoreDenied$
+        +string PacRestoreFailed$
+        +string RateLimited$
+        +string NoDiskSpace$
+        +string ChecksumMismatch$
+        +string LaunchFailed$
+    }
+    class UpdateDefaults {
+        <<static>>
+        +string Repository$
+        +string ChecksumsAssetName$
+        +string[] MirrorPrefixes$
+        +int ReadyTimeoutMs$
+        +int HeartbeatSeconds$
+        +int GracefulStopMs$
+    }
+
+    %% ---------------- 配置（被修改） ----------------
+    class AppConfig {
+        <<modified>>
+        +int SchemaVersion
+        +bool AutoCheckEnabled
+        +int CheckIntervalHours
+        +DateTime LastCheckUtc
+        +string LastCheckResult
+        +string SkippedVersion
+        +bool ProxyEnabled
+        +ProxyMode ProxyMode
+        +int ProxyPort
+        +int ProxyWebUiPort
+        +bool ProxySystemWide
+        +CertConsent CertConsent
+        +string CertThumbprint
+        +bool UpdateSetupCompleted
+        +AppConfig Clone()
+    }
+    class ConfigService {
+        <<modified>>
+        -int CurrentSchemaVersion
+        +AppConfig Current
+        +void Load()
+        +void SaveNow()
+        +void SaveDebounced()
+        -AppConfig Sanitize(AppConfig config)$
+        -void MigrateToV4(AppConfig config)$
+    }
+
+    %% ---------------- 能力层服务 ----------------
+    class IGitPortService {
+        <<interface>>
+        +ProxyStatus Status
+        +string WorkingDirectory
+        +string BinaryPath
+        +string CaCertPath
+        +Task~ProxyStatus~ StartAsync(ProxyMode mode, CancellationToken ct)
+        +Task~ProxyStatus~ ApplyModeAsync(ProxyMode mode, CancellationToken ct)
+        +Task StopAsync(CancellationToken ct)
+        +void CancelPendingRestart()
+        +Task~bool~ PingAsync(CancellationToken ct)
+    }
+    class GitPortService {
+        -Process _process
+        -CancellationTokenSource _proxySessionCts
+        -int _restartAttempts
+        -int _heartbeatMiss
+        -bool _intentionalStop
+        -bool EnsureBinary()
+        -int ProbePort(int from, int to)
+        -Task~bool~ WaitReadyAsync(int webUiPort, CancellationToken ct)
+        -Task HeartbeatLoopAsync(CancellationToken ct)
+        -void OnProcessExited(object sender, EventArgs e)
+        -Task~bool~ RestartWithBackoffAsync(ProxyMode mode, CancellationToken ct)
+        -void RaiseStatus(ProxyStatus status)
+    }
+
+    class IPacService {
+        <<interface>>
+        +PacState State
+        +Task~bool~ CaptureBaselineAsync(CancellationToken ct)
+        +Task~PacState~ VerifyAsync(int webUiPort, CancellationToken ct)
+        +Task~bool~ RestoreAsync(CancellationToken ct)
+        +Task~bool~ HealResidualAsync(CancellationToken ct)
+    }
+    class PacService {
+        -PacSnapshot _snapshot
+        -string SnapshotPath
+        -string ReadAutoConfigUrl()
+        -void WriteAutoConfigUrl(string value)
+        -bool PointsToUs(string url)
+    }
+
+    class ICertificateService {
+        <<interface>>
+        +CertStatus Status
+        +string CaCertPath
+        +Task~CertStatus~ RefreshAsync(CancellationToken ct)
+        +Task~CertStatus~ InstallAsync(CertConsentToken consent, CancellationToken ct)
+        +Task~CertStatus~ RemoveAsync(CancellationToken ct)
+    }
+    class CertificateService {
+        -CertStatus _status
+        -string CertRecordPath
+        -X509Certificate2 LoadCaFromPem()
+        -X509Certificate2 FindInStore(string thumbprint)
+        -void WriteCertRecord(X509Certificate2 cert)
+    }
+
+    class IProxyHttpClientProvider {
+        <<interface>>
+        +ProxyRoute CurrentRoute
+        +void Invalidate(int proxyPort)
+        +HttpClient Get(ProxyRoute route)
+    }
+    class ProxyHttpClientProvider {
+        -HttpClient _proxyClient
+        -HttpClient _directClient
+        -int _currentPort
+    }
+
+    class IUpdateService {
+        <<interface>>
+        +UpdateStage Stage
+        +string RepositorySlug
+        +Task~UpdateCheckResult~ CheckAsync(UpdateCheckTrigger trigger, CancellationToken ct)
+        +Task~PreparedPackage~ DownloadAndVerifyAsync(ReleaseInfo release, IProgress~DownloadProgress~ progress, CancellationToken ct)
+        +Task~bool~ LaunchInstallerAsync(PreparedPackage package, CancellationToken ct)
+        +void CleanupTemp(bool keepForDiagnostics)
+    }
+    class UpdateService {
+        -UpdateStage _stage
+        -SemaphoreSlim _singleFlight
+        -Uri ResolveSourceUri(ReleaseAsset asset, DownloadSource source)
+        -Task CopyWithProgressAsync(Stream src, FileStream dst, long total, IProgress~DownloadProgress~ progress, DownloadSource source, int attempt, CancellationToken ct)
+        -Task~string~ ComputeSha256Async(string path, CancellationToken ct)
+        -bool VerifyChecksum(string expected, string actual)
+        -Task~bool~ TryFetchChecksumsAsync(ReleaseInfo release, CancellationToken ct)
+        -ReleaseInfo ParseRelease(string json)$
+        -IEnumerable~DownloadSource~ BuildSourcePlan(ProxyStatus proxy)$
+        -Task PersistPendingAsync(PreparedPackage package)
+    }
+
+    %% ---------------- 编排层 ----------------
+    class IUpdateCoordinator {
+        <<interface>>
+        +ProxyStatus Proxy
+        +CertStatus Certificate
+        +PacState Pac
+        +UpdateCheckResult LastCheck
+        +UpdateAvailability Pending
+        +bool IsDownloading
+        +Task InitializeAsync(CancellationToken ct)
+        +Task~bool~ SetProxyEnabledAsync(bool enabled, CancellationToken ct)
+        +Task~bool~ SetSystemWideAsync(bool enabled, CancellationToken ct)
+        +Task~CertStatus~ GrantConsentAsync(CancellationToken ct)
+        +Task~CertStatus~ RevokeCertificateAsync(CancellationToken ct)
+        +Task~UpdateCheckResult~ CheckNowAsync(CancellationToken ct)
+        +Task~PreparedPackage~ DownloadAsync(IProgress~DownloadProgress~ progress, CancellationToken ct)
+        +void SuppressVersion(Version version)
+        +Task PrepareForExitAsync(CancellationToken ct)
+    }
+    class UpdateCoordinator {
+        -SemaphoreSlim _gate
+        -CancellationTokenSource _appCts
+        -CancellationTokenSource _checkCts
+        -CancellationTokenSource _downloadCts
+        -PeriodicTimer _dailyTimer
+        -Task StartProxyInternalAsync(ProxyMode mode, CancellationToken ct)
+        -Task ApplyEnhancementAsync(CertConsentToken token, CancellationToken ct)
+        -Task DegradeToBasicAsync(string reason, CancellationToken ct)
+        -Task SilentCheckAsync(CancellationToken ct)
+        -void PublishPending(UpdateAvailability availability)
+        -void Notice(string text)
+    }
+
+    %% ---------------- UI 层 ----------------
+    class UpdateDialog {
+        <<window>>
+        -UpdateStage _stage
+        -CancellationTokenSource _downloadCts
+        +void ShowDetails(ReleaseInfo release, string currentVersion)
+        -void OnPrimaryClick(object sender, RoutedEventArgs e)
+        -void OnCancelClick(object sender, RoutedEventArgs e)
+        -void RenderStage(UpdateStage stage)
+        -void OnProxyStatusChanged(object sender, ProxyStatus status)
+    }
+    class CertConsentDialog {
+        <<window>>
+        +bool ConsentGranted
+        -void OnAgreeClick(object sender, RoutedEventArgs e)
+        -void OnDeclineClick(object sender, RoutedEventArgs e)
+    }
+    class SettingsPage {
+        <<modified>>
+        -bool _loading
+        -void RefreshUpdateSection()
+        -void OnAutoCheckClick(object sender, RoutedEventArgs e)
+        -void OnProxyToggleClick(object sender, RoutedEventArgs e)
+        -void OnEnableEnhanceClick(object sender, RoutedEventArgs e)
+        -void OnRemoveCertClick(object sender, RoutedEventArgs e)
+        -void OnCheckNowClick(object sender, RoutedEventArgs e)
+    }
+    class MainWindow {
+        <<modified>>
+        -bool _exiting
+        +void ShowUpdateBanner(ReleaseInfo release)
+        +void HideUpdateBanner()
+        +void RequestExit()
+        -Task ExitAsync()
+    }
+    class AboutPage {
+        <<modified>>
+        +void SetUpdateBadge(bool visible)
+    }
+    class TrayService {
+        <<modified>>
+        +void SetUpdateMenuItem(ReleaseInfo release)
+        +void ShowBalloon(string title, string message)
+    }
+
+    %% ---------------- 安装 / 卸载 / 打包 ----------------
+    class Installer {
+        <<modified>>
+        +bool WaitForProcessExit(int pid, TimeSpan timeout)$
+        +void Install(InstallOptions options, Action~InstallProgress~ report)$
+        +void Uninstall(string installDir, Action~InstallProgress~ report)$
+    }
+    class ProxyCleanup {
+        <<static>>
+        +bool CleanupAll(string installDir)$
+        +void KillProxyProcesses()$
+        +bool RestorePac()$
+        +bool RemoveCertificate()$
+        -string ReadDataRoot()$
+    }
+    class AppServices {
+        <<static>>
+        +IConfigService Config$
+        +ILogService Log$
+        +IMonitorService Monitor$
+        +ITrayService Tray$
+        +IGitPortService GitPort$
+        +IPacService Pac$
+        +ICertificateService Certificates$
+        +IProxyHttpClientProvider ProxyHttp$
+        +IUpdateService Updates$
+        +IUpdateCoordinator UpdateCoordinator$
+    }
+
+    %% ================= 关系 =================
+    AppConfig ..> ProxyMode
+    AppConfig ..> CertConsent
+    ConfigService --> AppConfig : owns
+    ConfigService ..> UpdateDefaults
+
+    ProxyStatus ..> ProxyState
+    ProxyStatus ..> ProxyMode
+    ProxyStatus ..> ProxyFailureKind
+    CertStatus ..> CertFailure
+    CertConsentToken ..> CertConsent : authorizes
+    ReleaseInfo *-- ReleaseAsset : contains
+    UpdateCheckResult ..> ReleaseInfo
+    DownloadProgress ..> DownloadSource
+    UpdateAvailability ..> ReleaseInfo
+    UpdateFailedException ..> UpdateErrorCodes : carries
+
+    IGitPortService <|.. GitPortService
+    IPacService <|.. PacService
+    ICertificateService <|.. CertificateService
+    IProxyHttpClientProvider <|.. ProxyHttpClientProvider
+    IUpdateService <|.. UpdateService
+    IUpdateCoordinator <|.. UpdateCoordinator
+
+    GitPortService ..> ProxyStatus : emits
+    GitPortService ..> UpdateDefaults
+    GitPortService ..> UpdateErrorCodes
+    CertificateService ..> CertConsentToken : requires
+    CertificateService ..> CertStatus : emits
+    PacService ..> PacSnapshot : persists
+    PacService ..> PacState : emits
+    UpdateService --> IProxyHttpClientProvider : uses
+    UpdateService ..> PreparedPackage : produces
+    UpdateService ..> DownloadProgress : emits
+    UpdateService ..> UpdateFailedException : throws
+    UpdateService ..> IConfigService : reads cache
+
+    UpdateCoordinator --> IGitPortService : controls
+    UpdateCoordinator --> IPacService : controls
+    UpdateCoordinator --> ICertificateService : controls
+    UpdateCoordinator --> IUpdateService : controls
+    UpdateCoordinator --> IProxyHttpClientProvider : switches route
+    UpdateCoordinator ..> IConfigService
+    UpdateCoordinator ..> ILogService
+    UpdateCoordinator ..> ITrayService
+    UpdateCoordinator ..> ProxyStatus : exposes
+    UpdateCoordinator ..> UpdateAvailability : exposes
+
+    UpdateDialog ..> IUpdateCoordinator : calls
+    UpdateDialog ..> ReleaseInfo : renders
+    UpdateDialog ..> DownloadProgress : renders
+    CertConsentDialog ..> CertConsentToken : produces
+    SettingsPage ..> IUpdateCoordinator : calls
+    MainWindow ..> IUpdateCoordinator : exit sequence
+    AboutPage ..> IUpdateCoordinator : reads Pending
+    TrayService ..> IUpdateCoordinator : reads Pending
+
+    AppServices o-- IGitPortService
+    AppServices o-- IPacService
+    AppServices o-- ICertificateService
+    AppServices o-- IProxyHttpClientProvider
+    AppServices o-- IUpdateService
+    AppServices o-- IUpdateCoordinator
+
+    Installer ..> ProxyCleanup : reuses
+    ProxyCleanup ..> PacSnapshot : reads pac-backup.json

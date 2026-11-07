@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <LangVersion>12.0</LangVersion>
+    <AssemblyName>正画安装程序</AssemblyName>
+    <RootNamespace>PivotPic.Setup</RootNamespace>
+    <ApplicationIcon>..\PivotPic\Assets\app.ico</ApplicationIcon>
+    <Version>1.2.0</Version>
+    <Product>正画 PivotPic</Product>
+    <Company>鹏飞广告·饺子</Company>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 卸载善后：结束加速进程 + 还原系统代理 + 删工作目录 -->
+    <Compile Include="..\Shared\ProxyCleanup.cs" Link="Shared\ProxyCleanup.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 整份程序目录压成 zip 嵌入，安装时解压到目标目录即可 -->
+    <EmbeddedResource Include="payload\app.zip" Condition="Exists('payload\app.zip')">
+      <LogicalName>payload.app.zip</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="payload\logo.png" Condition="Exists('payload\logo.png')">
+      <LogicalName>payload.logo.png</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

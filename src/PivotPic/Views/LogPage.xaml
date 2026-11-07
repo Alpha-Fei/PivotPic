@@ -1,0 +1,150 @@
+<UserControl x:Class="PivotPic.Views.LogPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:models="clr-namespace:PivotPic.Models"
+             Background="Transparent"
+             FontFamily="{DynamicResource Font.UI}">
+
+    <!--
+        日志页：筛选工具条 + 虚拟化列表 + 底部计数。
+        列表项模板刻意保持单行文本，保证 Recycling 模式下重绘成本最低。
+    -->
+
+    <Grid Margin="24,20,24,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== 工具条 ==================== -->
+        <Grid Grid.Row="0" Margin="0,0,0,14">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <ComboBox x:Name="CmbLevel" Width="130" VerticalAlignment="Center"
+                          Style="{StaticResource Combo.Base}"
+                          ItemContainerStyle="{StaticResource Combo.Item}"
+                          SelectionChanged="OnFilterChanged">
+                    <ComboBoxItem Content="全部级别" />
+                    <ComboBoxItem Content="信息" />
+                    <ComboBoxItem Content="警告" />
+                    <ComboBoxItem Content="错误" />
+                </ComboBox>
+
+                <Grid Width="300" Margin="10,0,0,0" VerticalAlignment="Center">
+                    <TextBox x:Name="TxtSearch" Height="36"
+                             Style="{StaticResource Input.Text}"
+                             Padding="34,0"
+                             VerticalContentAlignment="Center"
+                             TextChanged="OnSearchTextChanged"
+                             ToolTip="按文件名、动作或目录搜索" />
+                    <Path Width="14" Height="14" Margin="12,0,0,0"
+                          HorizontalAlignment="Left" VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Search}"
+                          Stroke="{DynamicResource Icon.Secondary}"
+                          IsHitTestVisible="False" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button Content="打开日志目录" Style="{StaticResource Btn.Ghost}"
+                        Click="OnOpenLogDirectoryClick" />
+                <Button Content="导出" Margin="6,0,0,0" Style="{StaticResource Btn.Ghost}"
+                        Click="OnExportClick" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ==================== 列表 ==================== -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="8,8,8,8">
+            <ListBox x:Name="LogList"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ItemContainerStyle="{StaticResource ListItem}"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     VirtualizingPanel.ScrollUnit="Pixel">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <!--
+                            固定列宽 + Grid，不用字符串拼分隔符：列宽一变整行就参差，而且空字段会留下「· ·」。
+                            列宽：时间 78 / 级别 44 / 动作 96 / 文件名 * / 尺寸 92 / 耗时 56
+                        -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="78" />
+                                <ColumnDefinition Width="44" />
+                                <ColumnDefinition Width="96" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="92" />
+                                <ColumnDefinition Width="56" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 时间（等宽右对齐） -->
+                            <TextBlock Grid.Column="0" Text="{Binding TimeText}"
+                                       Margin="0,0,12,0" VerticalAlignment="Center"
+                                       TextAlignment="Right"
+                                       Style="{StaticResource Typo.Mono}" />
+
+                            <!-- 级别（颜色区分） -->
+                            <TextBlock Grid.Column="1" Text="{Binding LevelText}"
+                                       Margin="0,0,10,0" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource Typo.Mono}">
+                                        <!-- 注意：Text.Secondary 既是画刷键也是样式键，作为 Foreground 取值会拿到样式对象，
+                                             这里改用同色的 Icon.Secondary 画刷，避免运行时类型不匹配。 -->
+                                        <Setter Property="Foreground" Value="{DynamicResource Icon.Secondary}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Level}" Value="{x:Static models:LogLevel.Warn}">
+                                                <Setter Property="Foreground" Value="{DynamicResource Warning}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Level}" Value="{x:Static models:LogLevel.Error}">
+                                                <Setter Property="Foreground" Value="{DynamicResource Danger}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <!-- 动作 -->
+                            <TextBlock Grid.Column="2" Text="{Binding ActionText}"
+                                       Margin="0,0,10,0" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding ActionText}"
+                                       Style="{StaticResource Typo.Mono}" />
+
+                            <!-- 文件名（唯一可伸缩列） -->
+                            <TextBlock Grid.Column="3" Text="{Binding FileNameText}"
+                                       Margin="0,0,10,0" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding FileNameText}"
+                                       Style="{StaticResource Typo.Mono}"
+                                       Foreground="{DynamicResource Text.Primary}" />
+
+                            <!-- 原始尺寸（等宽右对齐） -->
+                            <TextBlock Grid.Column="4" Text="{Binding SizeText}"
+                                       Margin="0,0,12,0" VerticalAlignment="Center"
+                                       TextAlignment="Right"
+                                       Style="{StaticResource Typo.Mono}" />
+
+                            <!-- 耗时（等宽右对齐） -->
+                            <TextBlock Grid.Column="5" Text="{Binding ElapsedText}"
+                                       VerticalAlignment="Center"
+                                       TextAlignment="Right"
+                                       Style="{StaticResource Typo.Mono}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+
+        <!-- ==================== 底部计数 ==================== -->
+        <TextBlock x:Name="CountText" Grid.Row="2" Text="共 0 条" Margin="2,12,0,0"
+                   Style="{StaticResource Typo.Mono}" />
+    </Grid>
+</UserControl>

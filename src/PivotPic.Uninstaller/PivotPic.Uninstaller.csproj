@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <AssemblyName>uninstall</AssemblyName>
+    <RootNamespace>PivotPic.Uninstaller</RootNamespace>
+    <ApplicationIcon>..\PivotPic\Assets\app.ico</ApplicationIcon>
+    <Version>1.2.0</Version>
+    <Product>PivotPic</Product>
+    <Company>鹏飞广告·饺子</Company>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>none</DebugType>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 与主程序、安装程序共享的卸装善后逻辑 -->
+    <Compile Include="..\Shared\ProxyCleanup.cs" Link="Shared\ProxyCleanup.cs" />
+  </ItemGroup>
+
+</Project>

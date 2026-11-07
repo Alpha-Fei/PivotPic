@@ -1,0 +1,225 @@
+<Window x:Class="PivotPic.MainWindow"
+        xmlns:local="clr-namespace:PivotPic"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:PivotPic.Controls"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="正画 PivotPic"
+        Width="1000" Height="680"
+        MinWidth="760" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        Background="{DynamicResource Bg.Window}"
+        FontFamily="{DynamicResource Font.UI}"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Border x:Name="RootFrame"
+            Background="{DynamicResource Bg.Window}"
+            CornerRadius="{DynamicResource Radius.Window}"
+            ClipToBounds="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="48" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="32" />
+            </Grid.RowDefinitions>
+
+            <!-- ================= 自绘标题栏 ================= -->
+            <Grid Grid.Row="0" x:Name="TitleBar" Background="Transparent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+                    <Image Width="18" Height="18"
+                           Source="{DynamicResource Image.Brand}"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                    <TextBlock Text="正画" Margin="10,0,0,0" VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Body}" FontWeight="SemiBold" />
+                    <TextBlock Text="PivotPic" Margin="6,0,0,0" VerticalAlignment="Center"
+                               Style="{StaticResource Typo.Mono}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="BtnMinimize" Style="{StaticResource Btn.Caption}" Click="OnMinimizeClick"
+                            ToolTip="最小化">
+                        <Path Width="12" Height="12" Style="{StaticResource IconPath}"
+                                  Data="{DynamicResource Icon.Minimize}" Stroke="{DynamicResource Icon.Secondary}" />
+                    </Button>
+                    <Button x:Name="BtnMaximize" Style="{StaticResource Btn.Caption}" Click="OnMaximizeClick"
+                            ToolTip="最大化">
+                        <Grid Width="12" Height="12">
+                            <Path x:Name="GlyphMax" Style="{StaticResource IconPath}"
+                                  Data="{DynamicResource Icon.Maximize}" Stroke="{DynamicResource Icon.Secondary}" />
+                            <Path x:Name="GlyphRestore" Style="{StaticResource IconPath}" Visibility="Collapsed"
+                                  Data="{DynamicResource Icon.Restore}" Stroke="{DynamicResource Icon.Secondary}" />
+                        </Grid>
+                    </Button>
+                    <Button x:Name="BtnClose" Style="{StaticResource Btn.CaptionClose}" Click="OnCloseClick"
+                            ToolTip="关闭到托盘">
+                        <Path Width="12" Height="12" Style="{StaticResource IconPath}"
+                                  Data="{DynamicResource Icon.Close}" Stroke="{DynamicResource Icon.Secondary}" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- ================= 主体 ================= -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="72" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 左侧导航 -->
+                <Grid Grid.Column="0">
+                    <!-- 选中态滑动块：靠 TranslateTransform 位移 -->
+                    <Border x:Name="NavIndicator"
+                            Width="40" Height="40"
+                            CornerRadius="12"
+                            Background="{DynamicResource Accent.Soft}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Top"
+                            Margin="0,8,0,0"
+                            IsHitTestVisible="False">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="NavShift" X="0" Y="8" />
+                        </Border.RenderTransform>
+                    </Border>
+
+                    <StackPanel x:Name="NavList" VerticalAlignment="Top" Margin="0,8,0,0">
+                        <Button x:Name="NavMonitor" Tag="monitor" Height="56" Style="{StaticResource Btn.Nav}"
+                                Click="OnNavClick" ToolTip="监控">
+                            <StackPanel>
+                                <Path Width="20" Height="20" HorizontalAlignment="Center"
+                                      Style="{StaticResource IconPath}"
+                                      x:Name="IconMonitor"
+                                      Data="{DynamicResource Icon.Monitor}" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="NavSettings" Tag="settings" Height="56" Style="{StaticResource Btn.Nav}"
+                                Click="OnNavClick" ToolTip="设置">
+                            <StackPanel>
+                                <Path Width="20" Height="20" HorizontalAlignment="Center"
+                                      Style="{StaticResource IconPath}"
+                                      x:Name="IconSettings"
+                                      Data="{DynamicResource Icon.Settings}" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="NavLog" Tag="log" Height="56" Style="{StaticResource Btn.Nav}"
+                                Click="OnNavClick" ToolTip="日志">
+                            <StackPanel>
+                                <Path Width="20" Height="20" HorizontalAlignment="Center"
+                                      Style="{StaticResource IconPath}"
+                                      x:Name="IconLog"
+                                      Data="{DynamicResource Icon.Log}" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="NavAbout" Tag="about" Height="56" Style="{StaticResource Btn.Nav}"
+                                Click="OnNavClick" ToolTip="关于">
+                            <StackPanel>
+                                <Path Width="20" Height="20" HorizontalAlignment="Center"
+                                      Style="{StaticResource IconPath}"
+                                      x:Name="IconAbout"
+                                      Data="{DynamicResource Icon.Info}" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <!-- 页面容器 -->
+                <ContentControl Grid.Column="1" x:Name="PageHost" Margin="0" />
+            </Grid>
+
+            <!-- ================= 更新横幅（有可提示的新版本时才出现） ================= -->
+            <Border x:Name="UpdateBanner"
+                    Grid.Row="2"
+                    Visibility="Collapsed"
+                    Margin="20,0,20,10"
+                    Padding="14,10"
+                    Background="{DynamicResource Accent.Soft}"
+                    BorderBrush="{DynamicResource Stroke.Subtle}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Path Grid.Column="0"
+                          Width="14" Height="14"
+                          VerticalAlignment="Center"
+                          Style="{StaticResource IconPath}"
+                          Data="{DynamicResource Icon.Info}"
+                          Stroke="{DynamicResource Accent}" />
+
+                    <TextBlock x:Name="UpdateBannerText"
+                               Grid.Column="1"
+                               Margin="10,0,12,0"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Style="{StaticResource Typo.Body}" />
+
+                    <Button Grid.Column="2"
+                            Content="查看详情"
+                            Style="{StaticResource Btn.Primary}"
+                            Padding="12,5"
+                            Click="OnBannerViewClick" />
+
+                    <Button Grid.Column="3"
+                            Content="忽略"
+                            Style="{StaticResource Btn.Ghost}"
+                            Margin="6,0,0,0"
+                            Padding="10,5"
+                            Click="OnBannerIgnoreClick" />
+                </Grid>
+            </Border>
+
+            <!-- ================= 状态条 ================= -->
+            <Border Grid.Row="3" Background="Transparent" BorderBrush="{DynamicResource Stroke.Subtle}"
+                    BorderThickness="0,1,0,0">
+                <Grid Margin="20,0,20,0">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse x:Name="StatusDot" Width="6" Height="6"
+                                 Fill="{DynamicResource Success}" VerticalAlignment="Center" />
+                        <TextBlock x:Name="StatusText" Text="监控中" Margin="8,0,0,0"
+                                   VerticalAlignment="Center" Style="{StaticResource Typo.Secondary}" />
+                        <TextBlock Text="·" Margin="10,0" VerticalAlignment="Center"
+                                   Style="{StaticResource Typo.Secondary}" />
+                        <TextBlock x:Name="QueueText" Text="目录 0 个" VerticalAlignment="Center"
+                                   Style="{StaticResource Typo.Mono}" />
+                        <TextBlock Text="·" Margin="10,0" VerticalAlignment="Center"
+                                   Style="{StaticResource Typo.Secondary}" />
+                        <TextBlock x:Name="StatsText" Text="今日处理 0 张" VerticalAlignment="Center"
+                                   Style="{StaticResource Typo.Mono}" />
+                    </StackPanel>
+
+                    <TextBlock x:Name="VersionText" Text="" HorizontalAlignment="Right"
+                               VerticalAlignment="Center" Style="{StaticResource Typo.Mono}" />
+                </Grid>
+            </Border>
+
+            <!-- 通知层浮在最上层，不参与命中测试（卡片自身恢复可交互） -->
+            <controls:ToastHost x:Name="ToastLayer"
+                                Grid.Row="0" Grid.RowSpan="4"
+                                Panel.ZIndex="100"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Bottom" />
+        </Grid>
+    </Border>
+</Window>

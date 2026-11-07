@@ -1,0 +1,27 @@
+# 构建产物
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# 发布与打包产物（安装包走 GitHub Release 资产，不进仓库）
+dist/
+!dist/.gitkeep
+
+# 安装器载荷（由 build-release.ps1 现场生成）
+src/PivotPic.Setup/payload/*.zip
+
+# 运行时数据（配置/日志/代理工作目录）
+logs/
+config.json
+proxy/
+update/
+
+# 工作区内部数据（记忆/任务缓存），不进仓库
+.workbuddy/
+
+# 本地临时
+*.tmp
+*.bak
+.vs/
+.idea/
