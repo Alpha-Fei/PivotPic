@@ -305,11 +305,20 @@ public partial class App : Application
         };
     }
 
+    /// <summary>
+    /// 未处理异常的用户可见提示：只走应用内浮层，绝不发系统通知。
+    /// 主窗口还没建起来（启动早期异常）时没有可挂靠的界面，只留日志。
+    /// </summary>
     private void TryNotify(string message)
     {
         try
         {
-            AppServices.Tray?.ShowBalloon("正画 PivotPic", message);
+            if (Shell is null)
+            {
+                return;
+            }
+
+            Controls.ToastPopup.Show("正画 PivotPic", message);
         }
         catch
         {

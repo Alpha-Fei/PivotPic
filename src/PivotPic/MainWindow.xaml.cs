@@ -132,7 +132,8 @@ public partial class MainWindow : Window
 
         if (!IsVisible || WindowState == WindowState.Minimized)
         {
-            AppServices.Tray?.ShowBalloon("发现新版本", $"{release.TagName} 已可更新，点托盘菜单可查看");
+            // 窗口在托盘：底部横幅与托盘菜单的「有更新」入口已经把信息给到了，
+            // 这里不弹模态、也不发系统通知——等用户主动打开窗口自然能看到。
             return;
         }
 
@@ -333,7 +334,6 @@ public partial class MainWindow : Window
             {
                 e.Cancel = true;
                 Hide();
-                AppServices.Tray?.ShowBalloon("正画 PivotPic", "已最小化到系统托盘，双击图标可重新打开。");
             }
             else
             {
@@ -579,6 +579,10 @@ private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize
     {
         _exiting = true;
         _progress?.Shutdown();
+
+        // 轻提示是独立浮层窗口，退出前必须显式关掉，否则会留下一个没有主人的置顶窗口。
+        Controls.ToastPopup.ShutdownIfAny();
+
         PersistWindowPlacement();
         AppServices.Config?.SaveNow();
         Application.Current.Shutdown(0);

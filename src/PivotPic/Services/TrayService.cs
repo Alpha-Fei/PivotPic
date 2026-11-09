@@ -40,7 +40,6 @@ public sealed class TrayService : ITrayService
             ContextMenuStrip = _menu
         };
 
-        _notifyIcon.DoubleClick += (_, _) => InvokeShell(null);
         _notifyIcon.MouseClick += OnMouseClick;
     }
 
@@ -62,12 +61,20 @@ public sealed class TrayService : ITrayService
         _updateItem.Visible = true;
     }
 
+    /// <summary>
+    /// 左键单击托盘图标 = 打开/还原主窗口。
+    /// <para>
+    /// 这里**不再区分单击与双击**：单击就该开窗（这是 Windows 托盘应用的通行约定，
+    /// 以前单击只弹气泡、双击才开窗，用户点了没反应就是 bug）。
+    /// 双击只是连续两次单击，而 <see cref="InvokeShell"/> 是幂等的（已显示就只做恢复+前置），
+    /// 所以不会出现「抖两下」或重复开窗。右键由 <c>ContextMenuStrip</c> 自己处理，不在这里拦截。
+    /// </para>
+    /// </summary>
     private void OnMouseClick(object? sender, WinForms.MouseEventArgs e)
     {
         if (e.Button == WinForms.MouseButtons.Left)
         {
-            // 单击只提示状态，双击才开窗，避免误触打断当前工作。
-            _notifyIcon?.ShowBalloonTip(1200, "正画 PivotPic", BuildTooltip(), WinForms.ToolTipIcon.None);
+            InvokeShell(null);
         }
     }
 
@@ -112,12 +119,6 @@ public sealed class TrayService : ITrayService
         }
 
         _toggleItem.Text = IsMonitoring() ? "暂停监控" : "恢复监控";
-    }
-
-    /// <inheritdoc />
-    public void ShowBalloon(string title, string message)
-    {
-        _notifyIcon?.ShowBalloonTip(3000, title, message, WinForms.ToolTipIcon.None);
     }
 
     private static bool IsMonitoring()

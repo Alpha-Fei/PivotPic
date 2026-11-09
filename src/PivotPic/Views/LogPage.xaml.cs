@@ -339,12 +339,12 @@ public partial class LogPage : UserControl
         CountText.Text = $"共 {count} 条";
     }
 
-    /// <summary>用托盘气泡做轻量提示。</summary>
+    /// <summary>应用内轻提示（不再使用系统通知）。</summary>
     private static void Notify(string title, string message)
     {
         try
         {
-            AppServices.Tray?.ShowBalloon(title, message);
+            Controls.ToastPopup.Show(title, message);
         }
         catch (Exception)
         {

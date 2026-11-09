@@ -106,7 +106,7 @@ public interface ITrayService : IDisposable
 {
     void Initialize();
     void UpdateState(TrayState state, int alertCount);
-    void ShowBalloon(string title, string message);
+
     /// <summary>在托盘菜单里显示「发现新版本」入口；传入 null 表示移除该入口。</summary>
     void ShowUpdateBadge(string? versionText);
 }
