@@ -153,6 +153,8 @@ internal static class VipsNative
         var isTiff = string.Equals(extension, ".tif", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(extension, ".tiff", StringComparison.OrdinalIgnoreCase);
 
+        // 只加 unlimited。**不要**加 access=sequential：90° 旋转必须按列随机访问，
+        // 顺序访问模式下 vips 会直接报 "tiff2vips: out of order read -- at line N, but line M requested"。
         return isTiff ? path + "[unlimited]" : path;
     }
 
@@ -186,12 +188,15 @@ internal static class VipsNative
     /// </summary>
     /// <param name="sourcePath">源文件。</param>
     /// <param name="destinationPath">目标文件（同目录临时文件）。</param>
-    /// <param name="clockwise">true 顺时针，false 逆时针。</param>
-    /// <param name="totalAngle">总旋转角度（90/180/270）；0 表示不需要旋转。</param>
+    /// <param name="probePixelWidth">探测到的原始像素宽度（用于识别 libvips 是否已自动纠偏）。</param>
+    /// <param name="probeOrientedWidth">按 EXIF 校正后的逻辑宽度。</param>
+    /// <param name="baseAngle">EXIF 带来的基础角度（0/90/180/270）。</param>
+    /// <param name="delta">需要额外旋转的角度（顺时针 90 / 逆时针 -90）。</param>
     /// <param name="saveOptions">vips 保存选项，如 compression=lzw。</param>
     /// <param name="outputWidth">旋转后的宽度。</param>
     /// <param name="outputHeight">旋转后的高度。</param>
-    public static VipsRotateOutcome TryRotate(string sourcePath, string destinationPath, int totalAngle,
+    public static VipsRotateOutcome TryRotate(string sourcePath, string destinationPath,
+        int probePixelWidth, int probeOrientedWidth, int baseAngle, int delta,
         string? saveOptions, out int outputWidth, out int outputHeight)
     {
         outputWidth = 0;
@@ -231,6 +236,15 @@ internal static class VipsNative
                     : reason;
 
                 return VipsRotateOutcome.SourceRejected;
+            }
+
+            // 角度在同一次加载里算完：以前调用方要先 TryGetSize（再 load 一次 291 MB 的图）
+            // 才能判断 libvips 是否已按 EXIF 自动纠偏，两次加载会让峰值内存与分页压力翻倍。
+            // libvips 加载时若已纠偏，加载宽度会等于「校正后的宽度」而不等于原始像素宽度。
+            var totalAngle = NormalizeAngle(baseAngle + delta);
+            if (loadedWidth == probeOrientedWidth && probeOrientedWidth != probePixelWidth)
+            {
+                totalAngle = NormalizeAngle(delta);
             }
 
             // VIPS_ANGLE_D90 = 1，D180 = 2，D270 = 3
@@ -286,6 +300,13 @@ internal static class VipsNative
                 _unref!(input);
             }
         }
+    }
+
+    /// <summary>把角度归一化到 [0,360)。</summary>
+    private static int NormalizeAngle(int angle)
+    {
+        var normalized = angle % 360;
+        return normalized < 0 ? normalized + 360 : normalized;
     }
 
     /// <summary>读取图片当前（按 EXIF 自动旋转后）的宽度，用于判断 libvips 是否已自动纠偏。</summary>

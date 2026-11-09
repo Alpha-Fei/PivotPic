@@ -400,7 +400,7 @@ internal static class Program
 
         // 第 2 层：底层必须分类为「源图不可用」，而不是含糊的 RotateFailed。
         var probeTemp = Path.Combine(_root, "truncated_probe_out.vtmp.tif");
-        var outcome = VipsNative.TryRotate(truncated, probeTemp, 90, null, out _, out _);
+        var outcome = VipsNative.TryRotate(truncated, probeTemp, 0, 0, 0, 90, null, out _, out _);
         var leftovers = File.Exists(probeTemp);
 
         var ok = !result.Success

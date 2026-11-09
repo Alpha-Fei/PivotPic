@@ -502,19 +502,16 @@ public sealed class ImageService : IImageService
         try
         {
             var delta = direction == RotateDirection.Clockwise ? 90 : -90;
-            var totalAngle = NormalizeAngle(OrientationToAngle(probe.Orientation) + delta);
-
-            // libvips 加载时可能已按 EXIF 自动纠偏；用宽度是否变化来判断，避免重复旋转。
-            if (VipsNative.TryGetSize(path, out var loadedWidth, out _)
-                && loadedWidth == probe.OrientedWidth
-                && probe.OrientedWidth != probe.PixelWidth)
-            {
-                totalAngle = NormalizeAngle(delta);
-            }
+            var baseAngle = OrientationToAngle(probe.Orientation);
 
             var options = BuildVipsSaveOptions(path, extension);
 
-            var outcome = VipsNative.TryRotate(path, tempPath, totalAngle, options, out var outWidth, out var outHeight);
+            // 只加载一次：角度判定（是否已被 libvips 自动纠偏）在 VipsNative 内部用同一次加载的宽度完成。
+            // 以前这里会先 TryGetSize 再 TryRotate，等于把 291 MB 的图读两遍，
+            // 峰值内存和分页压力都翻倍——这在存储吃紧的机器上会直接把进程送进 0xc0000006。
+            var outcome = VipsNative.TryRotate(
+                path, tempPath, probe.PixelWidth, probe.OrientedWidth, baseAngle, delta,
+                options, out var outWidth, out var outHeight);
 
             if (outcome != VipsNative.VipsRotateOutcome.Success)
             {
