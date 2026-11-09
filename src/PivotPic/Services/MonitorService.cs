@@ -76,6 +76,15 @@ public sealed class MonitorService : IMonitorService, IDisposable
     /// <summary>一批处理结束的空闲宽限期：这么久没有新文件进队列就判定本批完成。</summary>
     private static readonly TimeSpan BatchIdleGrace = TimeSpan.FromMilliseconds(1600);
 
+    /// <summary>
+    /// 超过这个体积就算「大文件」，开始处理时单独记一行日志。
+    /// 作用是给现场留证据：真出现「卡住」时，日志里至少能看到卡在哪一张上。
+    /// </summary>
+    private const long BigFileLogThresholdBytes = 20L * 1024 * 1024;
+
+    /// <summary>单张图耗时超过这个值就记一条「慢图」警告，便于定位是哪一类图拖慢了整批。</summary>
+    private const long SlowImageThresholdMs = 3000;
+
     private readonly object _batchLock = new();
     private int _batchTotal;
     private int _batchDone;
@@ -1062,9 +1071,22 @@ public sealed class MonitorService : IMonitorService, IDisposable
         var counted = false;
         var rotated = false;
 
+        // 先把「正在处理哪一张」推给界面。
+        // 大图（几百 MB 的喷绘 TIFF）单张要跑几秒到几十秒，期间界面上如果连文件名都不动，
+        // 用户看到的就是「进度条卡住」——而实际上它在干活。
+        RaiseBatchProgress(item.FullPath, completed: false);
+
         try
         {
             (counted, rotated) = ProcessItem(item);
+        }
+        catch (Exception ex)
+        {
+            // 已经出队的成员必须计入分母：否则进度永远差一张（N-1/N），
+            // 而队列已经空了，表现出来就是「卡住不再动」。
+            counted = true;
+            AppServices.Log?.Error("处理", $"处理异常，已跳过：{ex.Message}",
+                item.Folder.Path, Path.GetFileName(item.FullPath));
         }
         finally
         {
@@ -1126,6 +1148,16 @@ public sealed class MonitorService : IMonitorService, IDisposable
 
         var suffix = config?.AddSuffix == true ? config.Suffix : null;
         var maxSideCm = ResolveMaxSideCm(item.Folder, item.FullPath);
+
+        // 大文件先记一行「开始处理」：万一日志里只有开始没有结束，就能立刻定位是哪一张卡住了。
+        var fileLength = ReadSizeSafe(item.FullPath);
+        if (fileLength >= BigFileLogThresholdBytes)
+        {
+            AppServices.Log?.Info("处理",
+                $"开始处理大文件（{fileLength / 1024d / 1024:0} MB，幅面上限={(maxSideCm > 0 ? $"{maxSideCm:0.#} cm" : "未启用")}）",
+                item.Folder.Path, Path.GetFileName(item.FullPath));
+        }
+
         var result = AppServices.Image?.Process(item.FullPath, mode, direction, maxPixels, suffix, maxSideCm)
                      ?? RotationResult.Fail("图像服务未就绪，已跳过");
 
@@ -1138,6 +1170,15 @@ public sealed class MonitorService : IMonitorService, IDisposable
             result.Action,
             result.ElapsedMs,
             BuildLogMessage(result));
+
+        // 慢图单独留一条警告：批量处理里「整体很慢」通常是被少数几张超大图拖住的，
+        // 只有把具体的文件与耗时标出来，用户和我们都才知道该调什么。
+        if (result.ElapsedMs >= SlowImageThresholdMs)
+        {
+            AppServices.Log?.Warn("处理",
+                $"慢图：耗时 {result.ElapsedMs} ms（{result.BeforeWidth}×{result.BeforeHeight}，{result.Action}）",
+                item.Folder.Path, Path.GetFileName(item.FullPath));
+        }
 
         if (item.Folder.ResolutionCheckEnabled && File.Exists(item.FullPath))
         {
@@ -1351,6 +1392,17 @@ public sealed class MonitorService : IMonitorService, IDisposable
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
             var picked = ready.ToList();
+
+            // 「已提交检测」之后到底发生了什么，必须留一行。
+            // 否则现场只看到「扫描完成，3 张已提交检测」，然后永远没有任何动静——
+            // 用户会认为卡死，我们也无从判断它们是被判成竖版丢掉了，还是真的没跑。
+            var dropped = batch.Count - picked.Count;
+            if (dropped > 0)
+            {
+                AppServices.Log?.Info("检测",
+                    $"本批 {batch.Count} 张：{picked.Count} 张进入处理，{dropped} 张判定无需处理（竖版/正方形/无法读取/重复）");
+            }
+
             if (picked.Count == 0)
             {
                 return;

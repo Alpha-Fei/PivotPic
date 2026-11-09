@@ -73,6 +73,17 @@ public sealed class ImageService : IImageService
         }
     }
 
+    /// <summary>
+    /// libvips 单张的绝对像素天花板（用户不可见、不可配）。
+    /// <para>
+    /// 高性能引擎是流式处理，内存不是瓶颈，所以它不看用户的 <c>MaxPixels</c>（设置页里那张卡片对它是隐藏的）。
+    /// 但「完全不设上限」等于把安全阀拆掉：一张 20 亿像素的图会让单消费者队列堵住十几分钟，
+    /// 期间整个队列（含进度条）都停摆。这里保留一个足够高、正常喷绘永远碰不到的天花板，
+    /// 超限按「跳过」处理并计入进度，绝不让队列无声堵死。
+    /// </para>
+    /// </summary>
+    private const int LibVipsAbsolutePixelCeiling = 1_500_000_000;
+
     /// <summary>处理单个文件：横版则旋转为竖版，失败只返回 Fail 结果而不抛异常。</summary>
     public RotationResult Process(string path, RotationMode mode, RotateDirection direction, int maxPixels,
         string? renameSuffix = null, double maxSideCm = 0)
@@ -101,12 +112,18 @@ public sealed class ImageService : IImageService
             return Skip("SkippedEmpty", "文件长度为 0", probe, stopwatch);
         }
 
-        // 高性能引擎是流式处理，不受像素上限约束；回退到内置引擎时才用上限兜底。
-        var effectiveMaxPixels = mode == RotationMode.LibVips && VipsNative.IsAvailable ? 0 : maxPixels;
+        // 高性能引擎是流式处理，不吃用户的 MaxPixels（设置页对它是隐藏的），
+        // 但仍要有绝对天花板兜底；回退到内置引擎时沿用用户配置的上限。
+        var usingVips = mode == RotationMode.LibVips && VipsNative.IsAvailable;
+        var effectiveMaxPixels = usingVips ? LibVipsAbsolutePixelCeiling : maxPixels;
 
         if (effectiveMaxPixels > 0 && probe.PixelCount > effectiveMaxPixels)
         {
-            return Skip("SkippedTooLarge", $"像素数 {probe.PixelCount} 超过上限 {effectiveMaxPixels}（可在设置里调大）", probe, stopwatch);
+            var hint = usingVips
+                ? $"超过高性能引擎单张上限 {effectiveMaxPixels:N0} px（超大图请先降分辨率再处理）"
+                : $"像素数 {probe.PixelCount} 超过上限 {effectiveMaxPixels}（可在设置里调大）";
+
+            return Skip("SkippedTooLarge", hint, probe, stopwatch);
         }
 
         // 成品幅面检查：按像素与 DPI 换算成厘米，宽高“都”超过上限才跳过（0 表示未启用）。
