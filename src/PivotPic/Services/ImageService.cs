@@ -208,6 +208,19 @@ public sealed class ImageService : IImageService
                 $"libvips 旋转失败，回退 WPF：{VipsNative.LastError}",
                 Path.GetDirectoryName(path) ?? string.Empty,
                 Path.GetFileName(path));
+
+            // TIFF 绝不回退 WPF：WPF 解码喷绘级 TIFF 会挂死数分钟且没有任何输出
+            // （实测 291 MB CMYK TIFF 挂 5 分钟以上），这是上一版最伤用户的地方。
+            // 宁可给一个明确的失败结论，也不能让界面「卡住 + 进程消失」。
+            if (IsTiff(path))
+            {
+                AppServices.Log?.Error("处理",
+                    $"这张 TIFF 无法处理，已判失败（不回退内置引擎）：{VipsNative.LastError}",
+                    Path.GetDirectoryName(path) ?? string.Empty,
+                    Path.GetFileName(path));
+
+                return Fail($"这张 TIFF 无法处理：{VipsNative.LastError}", stopwatch, probe);
+            }
         }
 
         // 走到这里说明要靠内置（WPF）引擎解码整幅像素。
@@ -457,9 +470,14 @@ public sealed class ImageService : IImageService
         return extension is ".jpg" or ".jpeg" or ".tif" or ".tiff";
     }
 
-    /// <summary>
-    /// 用 libvips 旋转并写回。失败返回 false，调用方回退到 WPF 实现。
-    /// </summary>
+    /// <summary>是否为 TIFF（.tif/.tiff）。TIFF 是唯一「绝不回退内置引擎」的格式。</summary>
+    private static bool IsTiff(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return string.Equals(extension, ".tif", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(extension, ".tiff", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// 用 libvips 旋转。返回值区分「源图读不出来」与「其它失败」，
     /// 让调用方能决定要不要回退 WPF（源图坏了回退也没用，只会让大图挂死）。
