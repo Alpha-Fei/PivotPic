@@ -26,6 +26,16 @@
              Exclude="..\..\src\PivotPic\Services\TrayService.cs" />
     <!-- 与主项目同一份共享文件：PacService 依赖它 -->
     <Compile Include="..\..\src\Shared\ProxyCleanup.cs" />
+
+    <!--
+      把 libvips 一起复制到测试输出目录：用例 16 要验证「高性能引擎也遵守 MaxPixels」，
+      没有这个 DLL 时 VipsNative.IsAvailable 恒为 false，该断言会被静默跳过（等于没测）。
+      文件缺失时用 Condition 跳过，保证没装 vips 的环境仍能跑完其余用例。
+    -->
+    <None Include="..\..\third_party\vips\libvips-42.dll"
+          Condition="Exists('..\..\third_party\vips\libvips-42.dll')"
+          Link="vips\libvips-42.dll"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -19,15 +19,32 @@ namespace PivotPic.Views;
 /// </summary>
 public partial class SettingsPage : UserControl
 {
+    /// <summary>当前卡片对应的引擎模式，用于拼提示语。</summary>
+    private RotationMode _maxPixelsMode = RotationMode.LibVips;
+
+    /// <summary>当前输入框对应的像素上限，用于拼提示语。</summary>
+    private int _maxPixelsValue;
+
     /// <summary>
-    /// 高性能引擎（libvips）是流式处理，没有像素上限，相关设置整卡隐藏。
-    /// 内置引擎和 EXIF 方式仍需要上限保护。
+    /// 处理上限卡片：**两个引擎都遵守这个上限**，所以始终显示（以前切到高性能引擎会整卡隐藏，
+    /// 但引擎实际仍需要一个上限，藏起来只会让用户以为「换引擎就不受限」）。
+    /// 只有提示语随引擎变化：高性能引擎逐块处理、内存占用低，但同样会跳过超限图。
     /// </summary>
     private void UpdateMaxPixelsVisibility(RotationMode mode)
     {
-        MaxPixelsCard.Visibility = mode == RotationMode.LibVips
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        _maxPixelsMode = mode;
+        MaxPixelsCard.Visibility = Visibility.Visible;
+        RefreshMaxPixelsHint();
+    }
+
+    /// <summary>按「当前引擎 + 当前上限」刷新提示语。</summary>
+    private void RefreshMaxPixelsHint()
+    {
+        var baseText = $"= {_maxPixelsValue:N0} 像素";
+
+        MaxPixelsHint.Text = _maxPixelsMode == RotationMode.LibVips
+            ? $"{baseText} · 逐块处理，内存占用低；另有 15 亿像素硬上限"
+            : baseText;
     }
 
     // ============================================================
@@ -142,7 +159,9 @@ public partial class SettingsPage : UserControl
     {
         var mp = maxPixels / 1_000_000.0;
         MaxPixelsBox.Text = mp.ToString(mp >= 100 ? "0" : "0.#", CultureInfo.CurrentCulture);
-        MaxPixelsHint.Text = $"= {maxPixels:N0} 像素";
+
+        _maxPixelsValue = maxPixels;
+        RefreshMaxPixelsHint();
     }
 
     /// <summary>只允许数字和一个小数点。</summary>

@@ -66,6 +66,7 @@ internal static class Program
         Run("13", "exif6 前后探测值：Orientation=6 / OrientedWidth=600", () => Case13(image));
         Run("14", "顺时针后标记块应在右上（方向正确）", () => Case14());
         Run("15", "逆时针后标记块应在左下（方向正确）", () => Case15());
+        Run("16", "高性能引擎同样遵守 MaxPixels（3MP 图 + 1MP 上限 → 跳过）", () => Case16(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -306,6 +307,36 @@ internal static class Program
         Check("15", "逆时针后标记块应在左下（方向正确）",
             IsRed(bottomLeft) && !IsRed(topLeft),
             $"左下={Describe(bottomLeft)} 左上={Describe(topLeft)}");
+    }
+
+    /// <summary>
+    /// 高性能引擎（libvips）必须同样遵守用户的 MaxPixels。
+    /// 这条断言针对的是一个真实缺陷：vips 分支曾把上限直接置 0，等于用户设置被静默忽略。
+    /// 本机没有 libvips 时该分支根本走不到，跳过（内置引擎的上限已由用例 6 覆盖）。
+    /// </summary>
+    private static void Case16(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("16", "高性能引擎同样遵守 MaxPixels", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var path = Path.Combine(_root, "vips_cap_2000x1500.jpg");
+        MakeImage(path, 2000, 1500, PixelFormats.Bgr24, new JpegBitmapEncoder { QualityLevel = 90 });
+        var before = Sha256(path);
+
+        // 3 MP 的图 + 1 MP 上限：必须跳过，且文件一个字节都不能动。
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, 1_000_000);
+        var after = Sha256(path);
+
+        var ok = !result.Rotated
+                 && result.Action == "SkippedTooLarge"
+                 && before == after
+                 && result.Message.Contains("可在设置里调大", StringComparison.Ordinal);
+
+        Check("16", "高性能引擎同样遵守 MaxPixels（3MP + 1MP → 跳过）", ok,
+            $"Action={result.Action} 哈希一致={before == after} Message={result.Message}");
     }
 
     // ---------- 基础设施 ----------

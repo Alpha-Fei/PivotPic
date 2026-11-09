@@ -74,12 +74,12 @@ public sealed class ImageService : IImageService
     }
 
     /// <summary>
-    /// libvips 单张的绝对像素天花板（用户不可见、不可配）。
+    /// 单张图片的绝对像素天花板（用户不可见、不可配，任何引擎都绕不过）。
     /// <para>
-    /// 高性能引擎是流式处理，内存不是瓶颈，所以它不看用户的 <c>MaxPixels</c>（设置页里那张卡片对它是隐藏的）。
-    /// 但「完全不设上限」等于把安全阀拆掉：一张 20 亿像素的图会让单消费者队列堵住十几分钟，
-    /// 期间整个队列（含进度条）都停摆。这里保留一个足够高、正常喷绘永远碰不到的天花板，
-    /// 超限按「跳过」处理并计入进度，绝不让队列无声堵死。
+    /// 用户自己的 <c>MaxPixels</c> 两个引擎都尊重——同一份配置换个引擎不该换行为。
+    /// 但「用户把上限调到很大」或「上限传 0（不限制）」时，仍然需要一个安全阀：
+    /// 一张 20 亿像素的图会让单消费者队列堵住十几分钟，期间整个队列（含进度条）都停摆。
+    /// 这里保留一个足够高、正常喷绘永远碰不到的天花板，超限按「跳过」处理并计入进度。
     /// </para>
     /// </summary>
     private const int LibVipsAbsolutePixelCeiling = 1_500_000_000;
@@ -112,16 +112,24 @@ public sealed class ImageService : IImageService
             return Skip("SkippedEmpty", "文件长度为 0", probe, stopwatch);
         }
 
-        // 高性能引擎是流式处理，不吃用户的 MaxPixels（设置页对它是隐藏的），
-        // 但仍要有绝对天花板兜底；回退到内置引擎时沿用用户配置的上限。
+        // 两个引擎都尊重用户的 MaxPixels：同一份配置换个引擎不该换行为。
+        // 1.5 Gpx 是绝对安全上限，永远生效——用户设得比它还高也会被压到这个值。
+        // 内置引擎保持原样（直接用 maxPixels），不做任何额外收窄，避免回归。
         var usingVips = mode == RotationMode.LibVips && VipsNative.IsAvailable;
-        var effectiveMaxPixels = usingVips ? LibVipsAbsolutePixelCeiling : maxPixels;
+        var userLimit = maxPixels > 0 ? maxPixels : LibVipsAbsolutePixelCeiling;
+        var effectiveMaxPixels = usingVips
+            ? Math.Min(userLimit, LibVipsAbsolutePixelCeiling)
+            : maxPixels;
 
         if (effectiveMaxPixels > 0 && probe.PixelCount > effectiveMaxPixels)
         {
-            var hint = usingVips
-                ? $"超过高性能引擎单张上限 {effectiveMaxPixels:N0} px（超大图请先降分辨率再处理）"
-                : $"像素数 {probe.PixelCount} 超过上限 {effectiveMaxPixels}（可在设置里调大）";
+            // 「用户设置生效」与「撞到调不动的硬天花板」要分开说，
+            // 否则用户会跑去设置里找一个反正也调不大的项。
+            var hitHardCeiling = usingVips && effectiveMaxPixels >= LibVipsAbsolutePixelCeiling;
+
+            var hint = hitHardCeiling
+                ? $"像素数 {probe.PixelCount:N0} 超过单张处理上限 {LibVipsAbsolutePixelCeiling:N0}（超大图请先降分辨率）"
+                : $"像素数 {probe.PixelCount:N0} 超过上限 {effectiveMaxPixels:N0}（可在设置里调大）";
 
             return Skip("SkippedTooLarge", hint, probe, stopwatch);
         }
