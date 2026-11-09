@@ -68,6 +68,7 @@ internal static class Program
         Run("15", "逆时针后标记块应在左下（方向正确）", () => Case15());
         Run("16", "高性能引擎不设像素上限（3MP 图 + 1MP 上限 → 仍然旋转）", () => Case16(image));
         Run("17", "TIFF（带 [unlimited]）仍可正常加载并旋转", () => Case17(image));
+        Run("18", "截断的 TIFF：必须判失败且不挂死", () => Case18(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -361,6 +362,56 @@ internal static class Program
 
         Check("17", "TIFF（带 [unlimited]）仍可正常加载并旋转", ok,
             $"Rotated={result.Rotated} 尺寸={probe?.PixelWidth}x{probe?.PixelHeight} Message={result.Message}");
+    }
+
+    /// <summary>
+    /// 截断/损坏文件：libvips 在这类失败上**不一定返回 NULL**，可能给一个非 NULL 的坏图像对象，
+    /// 错误只写在 <c>vips_error_buffer</c> 里。以前只判 NULL，于是继续 vips_rot 静默失败、
+    /// 再回退 WPF —— 大图就在 WPF 上挂死几分钟。
+    /// <para>
+    /// 断言两层：
+    /// 1) 业务层 <c>Process</c> 必须给出 Fail 结论且不挂死（用户可见的保证）；
+    /// 2) 底层 <c>VipsNative.TryRotate</c> 必须报 <c>SourceRejected</c>（本次加固的核心）。
+    /// 第二层单独断言是因为截断文件往往在 <c>Probe</c> 阶段就被 WPF 拒掉，
+    /// 走不到 vips——那样就测不到这条保护。
+    /// </para>
+    /// </summary>
+    private static void Case18(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("18", "截断的 TIFF 必须判失败", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var full = Path.Combine(_root, "trunc_source_800x600.tif");
+        MakeImage(full, 800, 600, PixelFormats.Bgra32, new TiffBitmapEncoder());
+
+        var bytes = File.ReadAllBytes(full);
+        var truncated = Path.Combine(_root, "truncated_800x600.tif");
+
+        // 只留前 1/3：头部还在，像素数据已被截断。
+        File.WriteAllBytes(truncated, bytes[..Math.Max(1024, bytes.Length / 3)]);
+
+        // 第 1 层：业务层必须快速给出 Fail。
+        var started = DateTime.UtcNow;
+        var result = image.Process(truncated, RotationMode.LibVips, RotateDirection.Clockwise, 120_000_000);
+        var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
+
+        // 第 2 层：底层必须分类为「源图不可用」，而不是含糊的 RotateFailed。
+        var probeTemp = Path.Combine(_root, "truncated_probe_out.vtmp.tif");
+        var outcome = VipsNative.TryRotate(truncated, probeTemp, 90, null, out _, out _);
+        var leftovers = File.Exists(probeTemp);
+
+        var ok = !result.Success
+                 && result.Action == "Failed"
+                 && elapsed < 5000
+                 && outcome == VipsNative.VipsRotateOutcome.SourceRejected
+                 && !leftovers;
+
+        Check("18", "截断的 TIFF：必须判失败、分类为源图不可用、不挂死", ok,
+            $"Process={result.Action} {elapsed:0} ms（{result.Message}） · " +
+            $"TryRotate={outcome} · 无残留={!leftovers} · LastError={VipsNative.LastError}");
     }
 
     // ---------- 基础设施 ----------

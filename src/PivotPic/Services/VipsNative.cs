@@ -157,6 +157,31 @@ internal static class VipsNative
     }
 
     /// <summary>
+    /// vips 旋转的结果分类。
+    /// <para>
+    /// 必须区分「源图根本读不出来」与「其它失败」：前者回退 WPF 也是一样的结局，
+    /// 而大图在 WPF 上会挂死几分钟，所以调用方要据此直接判失败、不准回退。
+    /// </para>
+    /// </summary>
+    public enum VipsRotateOutcome
+    {
+        /// <summary>旋转并写回成功。</summary>
+        Success,
+
+        /// <summary>原生库不可用（缺 DLL / 初始化失败）。</summary>
+        NotAvailable,
+
+        /// <summary>源图加载失败或返回坏图像（文件损坏、截断、解码失败）。<b>不应回退 WPF。</b></summary>
+        SourceRejected,
+
+        /// <summary>旋转步骤失败（可回退）。</summary>
+        RotateFailed,
+
+        /// <summary>写回失败（可回退）。</summary>
+        WriteFailed
+    }
+
+    /// <summary>
     /// 把图片旋转 90° 并写到目标路径。
     /// </summary>
     /// <param name="sourcePath">源文件。</param>
@@ -166,7 +191,7 @@ internal static class VipsNative
     /// <param name="saveOptions">vips 保存选项，如 compression=lzw。</param>
     /// <param name="outputWidth">旋转后的宽度。</param>
     /// <param name="outputHeight">旋转后的高度。</param>
-    public static bool TryRotate(string sourcePath, string destinationPath, int totalAngle,
+    public static VipsRotateOutcome TryRotate(string sourcePath, string destinationPath, int totalAngle,
         string? saveOptions, out int outputWidth, out int outputHeight)
     {
         outputWidth = 0;
@@ -174,7 +199,7 @@ internal static class VipsNative
 
         if (!IsAvailable)
         {
-            return false;
+            return VipsRotateOutcome.NotAvailable;
         }
 
         IntPtr input = IntPtr.Zero;
@@ -183,10 +208,29 @@ internal static class VipsNative
         try
         {
             input = _newFromFile!(BuildLoadPath(sourcePath), null);
+
+            // 关键：libvips 加载失败时**不一定返回 NULL**。
+            // 例如 tiffload 的「累积内存超限」路径会返回一个非 NULL 的坏图像对象，
+            // 错误只写进 vips_error_buffer。此时若只判 NULL 就会继续 vips_rot，
+            // 静默失败 → 回退 WPF → 大图在 WPF 上挂死。
+            // 所以加载后必须读一次尺寸做健全性检查，非正即视为源图不可用。
             if (input == IntPtr.Zero)
             {
                 _lastError = ReadError();
-                return false;
+                return VipsRotateOutcome.SourceRejected;
+            }
+
+            var loadedWidth = _getWidth!(input);
+            var loadedHeight = _getHeight!(input);
+
+            if (loadedWidth <= 0 || loadedHeight <= 0)
+            {
+                var reason = ReadError();
+                _lastError = string.IsNullOrWhiteSpace(reason)
+                    ? $"加载后图像尺寸非法：{loadedWidth}×{loadedHeight}"
+                    : reason;
+
+                return VipsRotateOutcome.SourceRejected;
             }
 
             // VIPS_ANGLE_D90 = 1，D180 = 2，D270 = 3
@@ -205,7 +249,7 @@ internal static class VipsNative
                 if (_rot!(input, out output, angle, IntPtr.Zero) != 0)
                 {
                     _lastError = ReadError();
-                    return false;
+                    return VipsRotateOutcome.RotateFailed;
                 }
 
                 source = output;
@@ -218,17 +262,17 @@ internal static class VipsNative
             if (_writeToFile!(source, target, IntPtr.Zero) != 0)
             {
                 _lastError = ReadError();
-                return false;
+                return VipsRotateOutcome.WriteFailed;
             }
 
             outputWidth = _getWidth!(source);
             outputHeight = _getHeight!(source);
-            return true;
+            return VipsRotateOutcome.Success;
         }
         catch (Exception ex)
         {
             _lastError = ex.Message;
-            return false;
+            return VipsRotateOutcome.RotateFailed;
         }
         finally
         {

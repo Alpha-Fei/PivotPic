@@ -182,10 +182,32 @@ public sealed class ImageService : IImageService
         }
 
         // 用户选了高性能引擎就走 libvips（需求驱动流水线，峰值内存比 WPF 低一个量级）。
-        if (mode == RotationMode.LibVips
-            && TryRotateWithVips(path, probe, direction, stopwatch, out var vipsResult))
+        if (mode == RotationMode.LibVips)
         {
-            return vipsResult;
+            var outcome = TryRotateWithVips(path, probe, direction, stopwatch, out var vipsResult);
+
+            if (outcome == VipsNative.VipsRotateOutcome.Success)
+            {
+                return vipsResult;
+            }
+
+            if (outcome == VipsNative.VipsRotateOutcome.SourceRejected)
+            {
+                // 源图根本读不出来（损坏 / 截断 / 编码异常 / 加载出坏图像对象）：
+                // 回退 WPF 也是同样的结局，而大图在 WPF 上会挂死几分钟。
+                // 这里直接判失败，让进度正常走完，并在日志里留下 vips_error_buffer 原文。
+                AppServices.Log?.Error("处理",
+                    $"vips 无法解析该图片，已判失败（不再回退 WPF）：{VipsNative.LastError}",
+                    Path.GetDirectoryName(path) ?? string.Empty,
+                    Path.GetFileName(path));
+
+                return Fail("图片无法读取（文件可能已损坏）", stopwatch, probe);
+            }
+
+            AppServices.Log?.Warn("处理",
+                $"libvips 旋转失败，回退 WPF：{VipsNative.LastError}",
+                Path.GetDirectoryName(path) ?? string.Empty,
+                Path.GetFileName(path));
         }
 
         // 走到这里说明要靠内置（WPF）引擎解码整幅像素。
@@ -438,7 +460,12 @@ public sealed class ImageService : IImageService
     /// <summary>
     /// 用 libvips 旋转并写回。失败返回 false，调用方回退到 WPF 实现。
     /// </summary>
-    private static bool TryRotateWithVips(string path, ImageProbe probe, RotateDirection direction,
+    /// <summary>
+    /// 用 libvips 旋转。返回值区分「源图读不出来」与「其它失败」，
+    /// 让调用方能决定要不要回退 WPF（源图坏了回退也没用，只会让大图挂死）。
+    /// </summary>
+    private static VipsNative.VipsRotateOutcome TryRotateWithVips(
+        string path, ImageProbe probe, RotateDirection direction,
         Stopwatch stopwatch, out RotationResult result)
     {
         result = null!;
@@ -446,7 +473,7 @@ public sealed class ImageService : IImageService
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (string.IsNullOrEmpty(directory))
         {
-            return false;
+            return VipsNative.VipsRotateOutcome.RotateFailed;
         }
 
         var extension = Path.GetExtension(path);
@@ -469,12 +496,13 @@ public sealed class ImageService : IImageService
 
             var options = BuildVipsSaveOptions(path, extension);
 
-            if (!VipsNative.TryRotate(path, tempPath, totalAngle, options, out var outWidth, out var outHeight))
+            var outcome = VipsNative.TryRotate(path, tempPath, totalAngle, options, out var outWidth, out var outHeight);
+
+            if (outcome != VipsNative.VipsRotateOutcome.Success)
             {
-                AppServices.Log?.Warn("处理", $"libvips 旋转失败，回退 WPF：{VipsNative.LastError}",
-                    directory, Path.GetFileName(path));
+                // 日志由调用方按 outcome 分级写（SourceRejected 记 Error，其余记 Warn），这里只清理临时文件。
                 TryDelete(tempPath);
-                return false;
+                return outcome;
             }
 
             try
@@ -492,7 +520,7 @@ public sealed class ImageService : IImageService
                 {
                     TryDelete(tempPath);
                     AppServices.Log?.Warn("处理", $"libvips 写回失败：{ex.Message}", directory, Path.GetFileName(path));
-                    return false;
+                    return VipsNative.VipsRotateOutcome.WriteFailed;
                 }
             }
 
@@ -509,13 +537,13 @@ public sealed class ImageService : IImageService
                 ElapsedMs = stopwatch.ElapsedMilliseconds
             };
 
-            return true;
+            return VipsNative.VipsRotateOutcome.Success;
         }
         catch (Exception ex)
         {
             TryDelete(tempPath);
             AppServices.Log?.Warn("处理", $"libvips 异常，回退 WPF：{ex.Message}", directory, Path.GetFileName(path));
-            return false;
+            return VipsNative.VipsRotateOutcome.RotateFailed;
         }
     }
 
