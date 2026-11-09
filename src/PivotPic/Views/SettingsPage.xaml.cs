@@ -26,9 +26,9 @@ public partial class SettingsPage : UserControl
     private int _maxPixelsValue;
 
     /// <summary>
-    /// 处理上限卡片：**两个引擎都遵守这个上限**，所以始终显示（以前切到高性能引擎会整卡隐藏，
-    /// 但引擎实际仍需要一个上限，藏起来只会让用户以为「换引擎就不受限」）。
-    /// 只有提示语随引擎变化：高性能引擎逐块处理、内存占用低，但同样会跳过超限图。
+    /// 处理上限卡片：**始终显示、永不隐藏**（用户反馈过「切引擎后设置项消失」）。
+    /// 高性能引擎不限制像素数，所以这一档把输入框置灰并说明原因，
+    /// 让用户既看得见这个设置、也明白它对当前引擎不生效。
     /// </summary>
     private void UpdateMaxPixelsVisibility(RotationMode mode)
     {
@@ -37,14 +37,17 @@ public partial class SettingsPage : UserControl
         RefreshMaxPixelsHint();
     }
 
-    /// <summary>按「当前引擎 + 当前上限」刷新提示语。</summary>
+    /// <summary>按「当前引擎 + 当前上限」刷新可用性与提示语。</summary>
     private void RefreshMaxPixelsHint()
     {
-        var baseText = $"= {_maxPixelsValue:N0} 像素";
+        var usingVips = _maxPixelsMode == RotationMode.LibVips;
 
-        MaxPixelsHint.Text = _maxPixelsMode == RotationMode.LibVips
-            ? $"{baseText} · 逐块处理，内存占用低；另有 15 亿像素硬上限"
-            : baseText;
+        MaxPixelsBox.IsEnabled = !usingVips;
+        MaxPixelsBox.Opacity = usingVips ? 0.5 : 1.0;
+
+        MaxPixelsHint.Text = usingVips
+            ? "高性能引擎不限制像素数（此设置仅对内置引擎生效）"
+            : $"= {_maxPixelsValue:N0} 像素";
     }
 
     // ============================================================

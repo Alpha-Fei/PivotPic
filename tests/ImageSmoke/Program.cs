@@ -66,7 +66,8 @@ internal static class Program
         Run("13", "exif6 前后探测值：Orientation=6 / OrientedWidth=600", () => Case13(image));
         Run("14", "顺时针后标记块应在右上（方向正确）", () => Case14());
         Run("15", "逆时针后标记块应在左下（方向正确）", () => Case15());
-        Run("16", "高性能引擎同样遵守 MaxPixels（3MP 图 + 1MP 上限 → 跳过）", () => Case16(image));
+        Run("16", "高性能引擎不设像素上限（3MP 图 + 1MP 上限 → 仍然旋转）", () => Case16(image));
+        Run("17", "TIFF（带 [unlimited]）仍可正常加载并旋转", () => Case17(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -310,33 +311,56 @@ internal static class Program
     }
 
     /// <summary>
-    /// 高性能引擎（libvips）必须同样遵守用户的 MaxPixels。
-    /// 这条断言针对的是一个真实缺陷：vips 分支曾把上限直接置 0，等于用户设置被静默忽略。
-    /// 本机没有 libvips 时该分支根本走不到，跳过（内置引擎的上限已由用例 6 覆盖）。
+    /// 高性能引擎按用户要求**不设像素上限**：即使 MaxPixels 设成 1 MP，3 MP 的图也必须照转。
+    /// （同一个行为在上一版是「缺陷」、现在是「产品决定」，所以断言方向反过来了。）
     /// </summary>
     private static void Case16(IImageService image)
     {
         if (!VipsNative.IsAvailable)
         {
-            Check("16", "高性能引擎同样遵守 MaxPixels", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            Check("16", "高性能引擎不设像素上限", true, "跳过：本机 libvips 不可用（该分支走不到）");
             return;
         }
 
-        var path = Path.Combine(_root, "vips_cap_2000x1500.jpg");
+        var path = Path.Combine(_root, "vips_nocap_2000x1500.jpg");
         MakeImage(path, 2000, 1500, PixelFormats.Bgr24, new JpegBitmapEncoder { QualityLevel = 90 });
-        var before = Sha256(path);
 
-        // 3 MP 的图 + 1 MP 上限：必须跳过，且文件一个字节都不能动。
+        // 3 MP 的图 + 1 MP 上限：高性能引擎不看这个上限，必须照转。
         var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, 1_000_000);
-        var after = Sha256(path);
+        var probe = image.Probe(path);
 
-        var ok = !result.Rotated
-                 && result.Action == "SkippedTooLarge"
-                 && before == after
-                 && result.Message.Contains("可在设置里调大", StringComparison.Ordinal);
+        var ok = result.Rotated
+                 && result.Action == "Rotated"
+                 && probe is { PixelWidth: 1500, PixelHeight: 2000 };
 
-        Check("16", "高性能引擎同样遵守 MaxPixels（3MP + 1MP → 跳过）", ok,
-            $"Action={result.Action} 哈希一致={before == after} Message={result.Message}");
+        Check("16", "高性能引擎不设像素上限（3MP + 1MP → 仍然旋转）", ok,
+            $"Rotated={result.Rotated} Action={result.Action} " +
+            $"尺寸={probe?.PixelWidth}x{probe?.PixelHeight} Message={result.Message}");
+    }
+
+    /// <summary>
+    /// TIFF 加载会带 <c>[unlimited]</c>（关掉 tiffload 那条 50 MB 累积内存保护）。
+    /// 这条用例保证「加了选项之后，普通 TIFF 依然能正常加载并旋转」，不会为了大图把常规路径搞坏。
+    /// </summary>
+    private static void Case17(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("17", "TIFF 仍可正常加载并旋转", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var path = Path.Combine(_root, "vips_tiff_800x600.tif");
+        MakeImage(path, 800, 600, PixelFormats.Bgra32, new TiffBitmapEncoder());
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, 120_000_000);
+        var probe = image.Probe(path);
+
+        var ok = result.Rotated
+                 && probe is { PixelWidth: 600, PixelHeight: 800 };
+
+        Check("17", "TIFF（带 [unlimited]）仍可正常加载并旋转", ok,
+            $"Rotated={result.Rotated} 尺寸={probe?.PixelWidth}x{probe?.PixelHeight} Message={result.Message}");
     }
 
     // ---------- 基础设施 ----------

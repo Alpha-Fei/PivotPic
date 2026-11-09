@@ -134,6 +134,29 @@ internal static class VipsNative
     }
 
     /// <summary>
+    /// 组装 libvips 的加载路径。
+    /// <para>
+    /// <b>为什么 TIFF 必须带 <c>[unlimited]</c></b>：libvips 的 tiffload 有一层反 DoS 保护，
+    /// 默认把「累积内存分配」限制在 50 MB（52428800 字节）。喷绘用的多通道 TIFF 光是 IFD/StripOffset
+    /// 与 XMP 就能超过这个数，于是加载直接失败：
+    /// <c>tiff2vips: Cumulated memory allocation of … is beyond the 52428800 cumulated byte limit</c>。
+    /// 这类文件在我们的场景里是完全正常的输入，所以 TIFF 一律关闭该保护。
+    /// </para>
+    /// <para>
+    /// 只对 TIFF 加：其它加载器（jpeg/png/webp）没有这条限制，乱塞未知选项反而会让 libvips 报错。
+    /// </para>
+    /// </summary>
+    private static string BuildLoadPath(string path)
+    {
+        var extension = Path.GetExtension(path);
+
+        var isTiff = string.Equals(extension, ".tif", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(extension, ".tiff", StringComparison.OrdinalIgnoreCase);
+
+        return isTiff ? path + "[unlimited]" : path;
+    }
+
+    /// <summary>
     /// 把图片旋转 90° 并写到目标路径。
     /// </summary>
     /// <param name="sourcePath">源文件。</param>
@@ -159,7 +182,7 @@ internal static class VipsNative
 
         try
         {
-            input = _newFromFile!(sourcePath, null);
+            input = _newFromFile!(BuildLoadPath(sourcePath), null);
             if (input == IntPtr.Zero)
             {
                 _lastError = ReadError();
@@ -235,7 +258,7 @@ internal static class VipsNative
         IntPtr image = IntPtr.Zero;
         try
         {
-            image = _newFromFile!(path, null);
+            image = _newFromFile!(BuildLoadPath(path), null);
             if (image == IntPtr.Zero)
             {
                 return false;

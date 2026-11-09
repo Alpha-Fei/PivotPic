@@ -73,16 +73,11 @@ public sealed class ImageService : IImageService
         }
     }
 
-    /// <summary>
-    /// 单张图片的绝对像素天花板（用户不可见、不可配，任何引擎都绕不过）。
-    /// <para>
-    /// 用户自己的 <c>MaxPixels</c> 两个引擎都尊重——同一份配置换个引擎不该换行为。
-    /// 但「用户把上限调到很大」或「上限传 0（不限制）」时，仍然需要一个安全阀：
-    /// 一张 20 亿像素的图会让单消费者队列堵住十几分钟，期间整个队列（含进度条）都停摆。
-    /// 这里保留一个足够高、正常喷绘永远碰不到的天花板，超限按「跳过」处理并计入进度。
-    /// </para>
-    /// </summary>
-    private const int LibVipsAbsolutePixelCeiling = 1_500_000_000;
+    /// <summary>内置（WPF）引擎能安全处理的最大文件体积；超过就不试了，直接失败返回。</summary>
+    private const long BuiltinEngineMaxFileBytes = 50L * 1024 * 1024;
+
+    /// <summary>内置（WPF）引擎能安全处理的最大像素数；超过就不试了，直接失败返回。</summary>
+    private const long BuiltinEngineMaxPixels = 100_000_000;
 
     /// <summary>处理单个文件：横版则旋转为竖版，失败只返回 Fail 结果而不抛异常。</summary>
     public RotationResult Process(string path, RotationMode mode, RotateDirection direction, int maxPixels,
@@ -112,26 +107,17 @@ public sealed class ImageService : IImageService
             return Skip("SkippedEmpty", "文件长度为 0", probe, stopwatch);
         }
 
-        // 两个引擎都尊重用户的 MaxPixels：同一份配置换个引擎不该换行为。
-        // 1.5 Gpx 是绝对安全上限，永远生效——用户设得比它还高也会被压到这个值。
-        // 内置引擎保持原样（直接用 maxPixels），不做任何额外收窄，避免回归。
+        // 高性能引擎按用户要求**不设像素上限**（它逐块处理，内存可控；
+        // 以前的 1.5 Gpx「绝对天花板」也随之取消，用户怎么设都不影响它）。
+        // 内置引擎沿用用户配置的 MaxPixels。
         var usingVips = mode == RotationMode.LibVips && VipsNative.IsAvailable;
-        var userLimit = maxPixels > 0 ? maxPixels : LibVipsAbsolutePixelCeiling;
-        var effectiveMaxPixels = usingVips
-            ? Math.Min(userLimit, LibVipsAbsolutePixelCeiling)
-            : maxPixels;
+        var effectiveMaxPixels = usingVips ? 0 : maxPixels;
 
         if (effectiveMaxPixels > 0 && probe.PixelCount > effectiveMaxPixels)
         {
-            // 「用户设置生效」与「撞到调不动的硬天花板」要分开说，
-            // 否则用户会跑去设置里找一个反正也调不大的项。
-            var hitHardCeiling = usingVips && effectiveMaxPixels >= LibVipsAbsolutePixelCeiling;
-
-            var hint = hitHardCeiling
-                ? $"像素数 {probe.PixelCount:N0} 超过单张处理上限 {LibVipsAbsolutePixelCeiling:N0}（超大图请先降分辨率）"
-                : $"像素数 {probe.PixelCount:N0} 超过上限 {effectiveMaxPixels:N0}（可在设置里调大）";
-
-            return Skip("SkippedTooLarge", hint, probe, stopwatch);
+            return Skip("SkippedTooLarge",
+                $"像素数 {probe.PixelCount:N0} 超过上限 {effectiveMaxPixels:N0}（可在设置里调大）",
+                probe, stopwatch);
         }
 
         // 成品幅面检查：按像素与 DPI 换算成厘米，宽高“都”超过上限才跳过（0 表示未启用）。
@@ -200,6 +186,22 @@ public sealed class ImageService : IImageService
             && TryRotateWithVips(path, probe, direction, stopwatch, out var vipsResult))
         {
             return vipsResult;
+        }
+
+        // 走到这里说明要靠内置（WPF）引擎解码整幅像素。
+        // 它扛不住喷绘级的大图：WPF 会把整幅读进内存，291 MB 的 CMYK TIFF 实测能挂死 5 分钟以上且毫无输出，
+        // 用户看到的就是「进度条卡住、图没转」。所以先设底线，扛不住就直接失败返回——
+        // 回退路径必须有一个明确结果，绝不允许「回退之后再也没有日志」的悬停状态。
+        if (probe.FileSize >= BuiltinEngineMaxFileBytes || probe.PixelCount >= BuiltinEngineMaxPixels)
+        {
+            var detail = $"{probe.FileSize / 1024d / 1024:0} MB，{probe.PixelCount:N0} px";
+
+            AppServices.Log?.Error("处理",
+                $"文件过大，内置引擎无法处理（{detail}）",
+                Path.GetDirectoryName(path) ?? string.Empty,
+                Path.GetFileName(path));
+
+            return Fail("文件过大，内置引擎无法处理", stopwatch, probe);
         }
 
         BitmapFrame? frame;
