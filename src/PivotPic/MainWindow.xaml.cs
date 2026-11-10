@@ -19,6 +19,12 @@ public partial class MainWindow : Window
     private string _currentPage = "monitor";
     private bool _exiting;
 
+    /// <summary>关闭动画进行中：挡住重复点击，否则会触发两次 Close。</summary>
+    private bool _closing;
+
+    /// <summary>刚做过「最小化动画」，等窗口恢复到 Normal 时要反向播一遍。</summary>
+    private bool _pendingRestoreAnimation;
+
     /// <summary>选中态滑动块：靠 TranslateTransform 平滑移动到目标项。</summary>
     private void AnimateNavIndicator(int index)
     {
@@ -305,6 +311,23 @@ public partial class MainWindow : Window
     {
         StateChanged += (_, _) =>
         {
+            // 从最小化恢复：反向播一遍（0 → 1 淡入 + 0.92 → 1 放大），和最小化对称。
+            if (WindowState == WindowState.Normal && _pendingRestoreAnimation)
+            {
+                _pendingRestoreAnimation = false;
+
+                if (SystemParameters.ClientAreaAnimation)
+                {
+                    RootFrame.Opacity = 0;
+                    RootScale.ScaleX = 0.92;
+                    RootScale.ScaleY = 0.92;
+
+                    AnimateRoot(toOpacity: 1, toScale: 1.0, milliseconds: 160,
+                        ease: new CubicEase { EasingMode = EasingMode.EaseOut },
+                        onCompleted: ResetRootVisuals);
+                }
+            }
+
             var maximized = WindowState == WindowState.Maximized;
             GlyphMax.Visibility = maximized ? Visibility.Collapsed : Visibility.Visible;
             GlyphRestore.Visibility = maximized ? Visibility.Visible : Visibility.Collapsed;
@@ -408,10 +431,27 @@ public partial class MainWindow : Window
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
     {
-        WindowState = WindowState.Minimized;
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            WindowState = WindowState.Minimized;
+            return;
+        }
+
+        // 先让内容缩小淡出，动画结束再真正最小化——自绘标题栏把系统动画顶掉了，
+        // 不补这一段用户看到的就是「啪」地一下没了。
+        AnimateRoot(toOpacity: 0, toScale: 0.92, milliseconds: 120,
+            ease: new CubicEase { EasingMode = EasingMode.EaseIn },
+            onCompleted: () =>
+            {
+                WindowState = WindowState.Minimized;
+
+                // 复位放在最小化之后：此时窗口已不可见，跳变看不到；恢复时再从 0 反向播。
+                ResetRootVisuals();
+                _pendingRestoreAnimation = true;
+            });
     }
 
-private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize();
+    private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize();
 
     private void ToggleMaximize()
     {
@@ -423,9 +463,115 @@ private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize
         {
             SystemCommands.MaximizeWindow(this);
         }
+
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            return;
+        }
+
+        // 尺寸变化由系统完成，这里只让内容「弹」到位，避免整块区域瞬间跳变。
+        // 160ms + 0.96 → 1.0：幅度小、时间短，够顺滑又不拖沓。
+        if (RootScale.ScaleX < 1)
+        {
+            return;
+        }
+
+        RootScale.ScaleX = 0.96;
+        RootScale.ScaleY = 0.96;
+        AnimateRoot(toOpacity: null, toScale: 1.0, milliseconds: 160,
+            ease: new CubicEase { EasingMode = EasingMode.EaseOut },
+            onCompleted: null);
     }
 
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+    private void OnCloseClick(object sender, RoutedEventArgs e)
+    {
+        if (_closing)
+        {
+            return;
+        }
+
+        // 「最小化到托盘」不是关闭，不播关闭动画——否则托盘路径会先淡出再消失，像闪了一下。
+        var action = AppServices.Config?.Current.CloseAction ?? CloseAction.MinimizeToTray;
+
+        if (action == CloseAction.MinimizeToTray || !SystemParameters.ClientAreaAnimation)
+        {
+            Close();
+            return;
+        }
+
+        _closing = true;
+
+        AnimateRoot(toOpacity: 0, toScale: 0.96, milliseconds: 150,
+            ease: new CubicEase { EasingMode = EasingMode.EaseOut },
+            onCompleted: () =>
+            {
+                try
+                {
+                    Close();
+                }
+                finally
+                {
+                    // 关闭可能被 OnClosing 取消（比如退出前还有收尾），所以这里必须复位，
+                    // 否则下次打开会是一块透明的窗口。
+                    _closing = false;
+                    ResetRootVisuals();
+                }
+            });
+    }
+
+    /// <summary>
+    /// 根内容的过渡动画。只动 Opacity 与 ScaleTransform，**不动 Width/Height**
+    /// （动尺寸会触发布局重排，几百个控件重算，肉眼可见地卡）。
+    /// </summary>
+    /// <param name="toOpacity">目标不透明度；传 null 表示这次不动透明度。</param>
+    /// <param name="toScale">目标缩放比例。</param>
+    /// <param name="milliseconds">时长（毫秒）。</param>
+    /// <param name="ease">缓动曲线。</param>
+    /// <param name="onCompleted">动画结束回调；用 Completed 驱动后续动作，不靠计时器猜时间。</param>
+    private void AnimateRoot(double? toOpacity, double toScale, int milliseconds,
+        IEasingFunction ease, Action? onCompleted)
+    {
+        var duration = new Duration(TimeSpan.FromMilliseconds(milliseconds));
+
+        if (toOpacity is { } opacity)
+        {
+            var fade = new DoubleAnimation(opacity, duration)
+            {
+                EasingFunction = ease,
+                FillBehavior = FillBehavior.HoldEnd
+            };
+
+            fade.Completed += (_, _) => onCompleted?.Invoke();
+            RootFrame.BeginAnimation(OpacityProperty, fade);
+        }
+
+        var grow = new DoubleAnimation(toScale, duration)
+        {
+            EasingFunction = ease,
+            FillBehavior = FillBehavior.HoldEnd
+        };
+
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+
+        // 不做淡入淡出的场景（最大化/还原）靠缩放动画的 Completed 触发回调。
+        if (toOpacity is null && onCompleted is not null)
+        {
+            grow.Completed += (_, _) => onCompleted();
+        }
+    }
+
+    /// <summary>清掉动画并复位：HoldEnd 的动画会一直压着属性值，必须先 BeginAnimation(null) 再赋值。</summary>
+    private void ResetRootVisuals()
+    {
+        RootFrame.BeginAnimation(OpacityProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+
+        RootFrame.Opacity = 1;
+        RootScale.ScaleX = 1;
+        RootScale.ScaleY = 1;
+    }
 
     // ============================================================
     // 导航

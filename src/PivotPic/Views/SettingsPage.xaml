@@ -276,47 +276,6 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- 网络加速 -->
-                    <Grid Margin="0,0,0,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="190" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="网络加速" VerticalAlignment="Center"
-                                   Style="{StaticResource Typo.Body}" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal">
-                            <ToggleButton x:Name="ToggleProxy"
-                                          Style="{StaticResource Toggle.Switch}"
-                                          VerticalAlignment="Center"
-                                          Click="OnProxyToggleClick" />
-                            <Ellipse x:Name="ProxyDot" Width="6" Height="6" Margin="14,0,0,0"
-                                     VerticalAlignment="Center"
-                                     Fill="{DynamicResource Text.Tertiary}" />
-                            <TextBlock x:Name="ProxyStatusText" Margin="8,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource Typo.Secondary}" />
-                        </StackPanel>
-                    </Grid>
-
-                    <!-- 系统级 GitHub 分流 -->
-                    <Grid Margin="0,0,0,12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="190" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="系统级 GitHub 分流" VerticalAlignment="Center"
-                                   Style="{StaticResource Typo.Body}" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal">
-                            <ToggleButton x:Name="ToggleSystemPac"
-                                          Style="{StaticResource Toggle.Switch}"
-                                          VerticalAlignment="Center"
-                                          Click="OnSystemPacToggleClick" />
-                            <TextBlock Text="仅接管 GitHub 域名，退出自动还原" Margin="12,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Style="{StaticResource Typo.Secondary}" />
-                        </StackPanel>
-                    </Grid>
-
                     <!-- 上次检查 -->
                     <Grid>
                         <Grid.ColumnDefinitions>

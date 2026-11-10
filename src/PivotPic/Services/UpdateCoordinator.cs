@@ -19,7 +19,7 @@ namespace PivotPic.Services;
 internal sealed class UpdateCoordinator : IUpdateCoordinator
 {
     /// <summary>定时器心跳间隔。真正的检查间隔由配置决定，这里只负责「到点没到点」。</summary>
-    private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(UpdateDefaults.CheckIntervalMinutes);
 
     /// <summary>退出前留给界面渲染「正在启动安装程序…」的时间。</summary>
     private const int ExitDelayMs = 600;
@@ -199,10 +199,12 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
             return;
         }
 
-        var intervalHours = Math.Clamp(config.UpdateCheckIntervalHours, 1, 168);
+        // 固定 5 分钟一次：用户明确要求，且设置页不再展示间隔。
+        // 旧配置里的 UpdateCheckIntervalHours 仍然读得到，但已不参与调度（保留只为兼容旧 config.json）。
+        var interval = TimeSpan.FromMinutes(UpdateDefaults.CheckIntervalMinutes);
         var elapsed = DateTime.UtcNow - _lastAttemptUtc;
 
-        if (elapsed < TimeSpan.FromHours(intervalHours))
+        if (elapsed < interval)
         {
             return;
         }

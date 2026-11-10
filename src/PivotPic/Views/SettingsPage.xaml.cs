@@ -231,27 +231,10 @@ public partial class SettingsPage : UserControl
             AppServices.Config.Changed += OnConfigChanged;
         }
 
-        // 加速与更新的状态由后台线程推进，这里统一转回 UI 线程刷新。
-        if (AppServices.Proxy is not null)
-        {
-            AppServices.Proxy.HealthChanged += OnProxyHealthChanged;
-        }
-
         if (AppServices.UpdateCoordinator is not null)
         {
             AppServices.UpdateCoordinator.StateChanged += OnUpdateStateChanged;
         }
-    }
-
-    private void OnProxyHealthChanged(object? sender, ProxyHealth health)
-    {
-        if (!Dispatcher.CheckAccess())
-        {
-            Dispatcher.BeginInvoke(new Action(RefreshProxyStatus));
-            return;
-        }
-
-        RefreshProxyStatus();
     }
 
     private void OnUpdateStateChanged(object? sender, EventArgs e)
@@ -587,40 +570,14 @@ public partial class SettingsPage : UserControl
     {
         ToggleAutoUpdate.IsChecked = config.AutoUpdateCheck;
         AutoUpdateHint.Text = config.AutoUpdateCheck
-            ? $"启动后检查 · 每 {config.UpdateCheckIntervalHours} 小时一次"
+            ? "启动后自动检查"
             : "已关闭自动检查，仍可手动检查";
 
-        ToggleProxy.IsChecked = config.ProxyMode != ProxyMode.Off;
-        ToggleSystemPac.IsChecked = config.ProxyMode == ProxyMode.SystemWide;
-        ToggleSystemPac.IsEnabled = config.ProxyMode != ProxyMode.Off;
-
-        RefreshProxyStatus();
         RefreshUpdateStatus();
     }
 
     /// <summary>按加速组件的真实状态刷新状态点与文案。文案里不出现任何底层组件名。</summary>
-    private void RefreshProxyStatus()
-    {
-        var health = AppServices.Proxy?.Current ?? ProxyHealth.Off;
 
-        ProxyStatusText.Text = string.IsNullOrEmpty(health.FailureText)
-            ? health.DisplayText
-            : $"{health.DisplayText} · {health.FailureText}";
-
-        // 端口与作用范围放进悬停提示：需要排查的人能看到，普通用户不必被技术细节打扰。
-        ProxyStatusText.ToolTip = health.DisplayDetail;
-
-        var colorKey = health.Status switch
-        {
-            ProxyStatus.RunningSystem => "Success",
-            ProxyStatus.RunningProcess => "Success",
-            ProxyStatus.Starting => "Warning",
-            ProxyStatus.Failed => "Warning",
-            _ => "Text.Tertiary"
-        };
-
-        ProxyDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, colorKey);
-    }
 
     /// <summary>刷新版本号、上次检查与「查看新版本」入口。</summary>
     private void RefreshUpdateStatus()
@@ -652,56 +609,13 @@ public partial class SettingsPage : UserControl
         AppServices.Config.SaveDebounced();
 
         AutoUpdateHint.Text = config.AutoUpdateCheck
-            ? $"启动后检查 · 每 {config.UpdateCheckIntervalHours} 小时一次"
+            ? "启动后自动检查"
             : "已关闭自动检查，仍可手动检查";
 
         AppServices.Log?.Info("更新", config.AutoUpdateCheck ? "已开启自动检查更新" : "已关闭自动检查更新");
     }
 
-    private async void OnProxyToggleClick(object sender, RoutedEventArgs e)
-    {
-        if (_loading || AppServices.Config?.Current is not { } config)
-        {
-            return;
-        }
 
-        var enable = ToggleProxy.IsChecked == true;
-
-        config.ProxyMode = enable
-            ? (ToggleSystemPac.IsChecked == true ? ProxyMode.SystemWide : ProxyMode.Passthrough)
-            : ProxyMode.Off;
-
-        AppServices.Config.SaveDebounced();
-        ToggleSystemPac.IsEnabled = enable;
-
-        await ApplyProxyModeAsync(config.ProxyMode);
-    }
-
-    private async void OnSystemPacToggleClick(object sender, RoutedEventArgs e)
-    {
-        if (_loading || AppServices.Config?.Current is not { } config)
-        {
-            return;
-        }
-
-        var enable = ToggleSystemPac.IsChecked == true;
-
-        if (enable && config.ProxyMode == ProxyMode.Off)
-        {
-            // 打开系统分流必然要启动加速，顺手把总开关拨上去，避免出现「分流开但加速关」的矛盾状态。
-            ToggleProxy.IsChecked = true;
-            config.ProxyMode = ProxyMode.SystemWide;
-        }
-        else
-        {
-            config.ProxyMode = enable ? ProxyMode.SystemWide : ProxyMode.Passthrough;
-        }
-
-        ToggleSystemPac.IsEnabled = config.ProxyMode != ProxyMode.Off;
-        AppServices.Config.SaveDebounced();
-
-        await ApplyProxyModeAsync(config.ProxyMode);
-    }
 
     /// <summary>把配置里的模式应用到加速组件，失败只降级直连并提示一次。</summary>
     private async Task ApplyProxyModeAsync(ProxyMode mode)
@@ -727,7 +641,7 @@ public partial class SettingsPage : UserControl
         }
         finally
         {
-            RefreshProxyStatus();
+            // 加速状态已不在界面展示，这里不需要再刷新任何控件。
         }
     }
 

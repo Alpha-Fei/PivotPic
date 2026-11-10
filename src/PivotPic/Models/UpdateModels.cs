@@ -306,8 +306,13 @@ public static class UpdateDefaults
     /// <summary>校验清单的资产文件名。</summary>
     public const string ChecksumsAssetName = "checksums.txt";
 
-    /// <summary>检查更新的默认间隔（小时）。</summary>
+    /// <summary>检查更新的默认间隔（小时）。v1.3.3 起不再参与调度，仅作旧配置兼容保留。</summary>
     public const int DefaultIntervalHours = 24;
+
+    /// <summary>
+    /// 自动检查更新的实际间隔（分钟）。用户要求「5 分钟一次」，且前端不再展示间隔。
+    /// </summary>
+    public const int CheckIntervalMinutes = 5;
 
     /// <summary>启动后延迟多久做第一次静默检查（秒）。</summary>
     public const int StartupDelaySeconds = 5;

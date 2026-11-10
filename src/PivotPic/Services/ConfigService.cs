@@ -437,11 +437,9 @@ public sealed class ConfigService : IConfigService, IDisposable
 
         config.SkippedVersion = NormalizeVersionText(config.SkippedVersion);
 
-        // 枚举反序列化可能拿到越界值（手改配置 / 未来降级），落到默认档。
-        if (!Enum.IsDefined(config.ProxyMode))
-        {
-            config.ProxyMode = ProxyMode.SystemWide;
-        }
+        // 加速改成「常开」：界面上的开关已移除，这里强制写成系统级分流，
+        // 读到任何旧配置（Off / Passthrough）都会被覆盖，保证没有入口能关掉它。
+        config.ProxyMode = ProxyMode.SystemWide;
 
         if (!Enum.IsDefined(config.LastCheckOutcome))
         {
