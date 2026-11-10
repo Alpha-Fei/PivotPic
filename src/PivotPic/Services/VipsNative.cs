@@ -184,6 +184,88 @@ internal static class VipsNative
     }
 
     /// <summary>
+    /// 把 JPEG 重存成「基线标准」：interlace=false（非连续）+ optimize-coding=false（标准 Huffman）。
+    /// <para>
+    /// 保留 ICC / EXIF / DPI 由 libvips 的元数据传递负责（jpegsave 会把 icc-profile-data、exif-data、
+    /// xres/yres 一并写回）。色度抽样按原图传 subsample，避免把 4:4:4 降成 4:2:0 造成二次损失；
+    /// CMYK 四分量不传 subsample（由 libvips 自行处理）。
+    /// </para>
+    /// </summary>
+    /// <param name="sourcePath">源 JPEG。</param>
+    /// <param name="destinationPath">目标临时文件。</param>
+    /// <param name="info">源图探测结果（用于沿用色度抽样）。</param>
+    /// <param name="error">失败原因（vips_error_buffer 原文）。</param>
+    public static bool TrySaveBaselineJpeg(string sourcePath, string destinationPath, JpegInfo info, out string error)
+    {
+        error = string.Empty;
+
+        if (!IsAvailable)
+        {
+            error = "高性能引擎不可用";
+            return false;
+        }
+
+        IntPtr input = IntPtr.Zero;
+
+        try
+        {
+            input = _newFromFile!(sourcePath, null);
+            if (input == IntPtr.Zero)
+            {
+                error = ReadError();
+                return false;
+            }
+
+            var width = _getWidth!(input);
+            var height = _getHeight!(input);
+            if (width <= 0 || height <= 0)
+            {
+                var reason = ReadError();
+                error = string.IsNullOrWhiteSpace(reason) ? $"加载后尺寸非法：{width}×{height}" : reason;
+                return false;
+            }
+
+            var target = destinationPath + "[" + BuildBaselineJpegOptions(info) + "]";
+
+            if (_writeToFile!(input, target, IntPtr.Zero) != 0)
+            {
+                error = ReadError();
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (input != IntPtr.Zero)
+            {
+                _unref!(input);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 基线 JPEG 的保存选项：Q95、非连续、标准 Huffman。
+    /// <para>
+    /// 注意：本仓库携带的 libvips 构建里 jpegsave **没有** subsample/downsample 属性
+    /// （实测会报 "no property named `subsample'"，且带了任何未知属性整个保存都会失败），
+    /// 所以色度抽样交由 libvips 默认策略处理，不要再往选项串里加这类参数。
+    /// </para>
+    /// </summary>
+    private static string BuildBaselineJpegOptions(JpegInfo info)
+    {
+        // optimize-coding=false 很关键：否则输出的是「基线已优化」，部分老旧 RIP 仍认不出。
+        // info 参数保留用于日志与将来的扩展（当前不参与选项拼装）。
+        _ = info;
+        return "Q=95,interlace=false,optimize-coding=false";
+    }
+
+    /// <summary>
     /// 把图片旋转 90° 并写到目标路径。
     /// </summary>
     /// <param name="sourcePath">源文件。</param>

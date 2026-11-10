@@ -201,9 +201,17 @@ public sealed class ProcessingPopup : Window
         }
 
         _title.Text = $"检测到 {progress.Total} 张需要处理的图片";
-        _detail.Text = string.IsNullOrWhiteSpace(progress.CurrentFile)
+        // 形如「3 / 8 · a.jpg · 转基线中」：用户要求写清楚正在做哪种处理。
+        var text = string.IsNullOrWhiteSpace(progress.CurrentFile)
             ? $"{progress.Processed} / {progress.Total}"
             : $"{progress.Processed} / {progress.Total} · {progress.CurrentFile}";
+
+        if (!string.IsNullOrWhiteSpace(progress.Phase))
+        {
+            text += $" · {progress.Phase}";
+        }
+
+        _detail.Text = text;
 
         AnimateFill(progress.Ratio);
 

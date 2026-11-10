@@ -23,7 +23,7 @@ public sealed class ConfigService : IConfigService, IDisposable
     private const int LegacyDefaultMaxPixels = 120_000_000;
 
     /// <summary>当前配置架构版本。v4 起新增「更新与网络」相关键。</summary>
-    private const int CurrentSchemaVersion = 4;
+    private const int CurrentSchemaVersion = 5;
 
     /// <summary>自动检查更新间隔的允许区间（小时）。</summary>
     private const int MinCheckIntervalHours = 1;
@@ -416,6 +416,14 @@ public sealed class ConfigService : IConfigService, IDisposable
             config.LastCheckOutcome = UpdateCheckOutcome.Unknown;
             config.SkippedVersion = string.Empty;
             config.ProxyMode = ProxyMode.SystemWide;
+            config.SchemaVersion = 4;
+        }
+
+        // v4 → v5：新增「JPEG 兼容模式」（连续 JPEG 转基线）。
+        // 默认开启：打印 RIP 只认基线，这个能力对用户是纯收益；不想改文件的人可以关掉。
+        if (config.SchemaVersion < 5)
+        {
+            config.ConvertProgressiveJpeg = true;
             config.SchemaVersion = CurrentSchemaVersion;
         }
 

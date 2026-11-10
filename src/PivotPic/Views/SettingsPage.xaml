@@ -138,6 +138,29 @@
                 </StackPanel>
             </Border>
 
+            <!-- ==================== 1.55 JPEG 兼容模式 ==================== -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                <StackPanel>
+                    <TextBlock Text="JPEG 兼容模式" Style="{StaticResource Typo.Title}" />
+                    <TextBlock Text="连续（progressive）JPEG 打印 RIP 无法识别，开启后会自动转为基线标准（保留色彩配置与 DPI）；竖版图同样会转换。"
+                               Margin="0,6,0,14" Style="{StaticResource Typo.Secondary}"
+                               TextWrapping="Wrap" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="190" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="连续 JPEG 转基线" VerticalAlignment="Center"
+                                   Style="{StaticResource Typo.Body}" />
+                        <ToggleButton x:Name="ToggleConvertProgressive" Grid.Column="1"
+                                      HorizontalAlignment="Left"
+                                      Style="{StaticResource Toggle.Switch}"
+                                      Click="OnConvertProgressiveClick" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
             <!-- ==================== 1.6 文件名标记 ==================== -->
             <Border Style="{StaticResource Card}" Margin="0,0,0,14">
                 <StackPanel>

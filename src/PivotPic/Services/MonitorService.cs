@@ -1071,10 +1071,11 @@ public sealed class MonitorService : IMonitorService, IDisposable
         var counted = false;
         var rotated = false;
 
-        // 先把「正在处理哪一张」推给界面。
+        // 先把「正在处理哪一张 + 正在做什么」推给界面。
         // 大图（几百 MB 的喷绘 TIFF）单张要跑几秒到几十秒，期间界面上如果连文件名都不动，
         // 用户看到的就是「进度条卡住」——而实际上它在干活。
-        RaiseBatchProgress(item.FullPath, completed: false);
+        // 用户还要求写清「处理的是哪种类型」，所以这里带上阶段。
+        RaiseBatchProgress(item.FullPath, completed: false, ResolvePhase(item.FullPath));
 
         try
         {
@@ -1158,7 +1159,9 @@ public sealed class MonitorService : IMonitorService, IDisposable
                 item.Folder.Path, Path.GetFileName(item.FullPath));
         }
 
-        var result = AppServices.Image?.Process(item.FullPath, mode, direction, maxPixels, suffix, maxSideCm)
+        var result = AppServices.Image?.Process(
+                         item.FullPath, mode, direction, maxPixels, suffix, maxSideCm,
+                         config?.ConvertProgressiveJpeg == true)
                      ?? RotationResult.Fail("图像服务未就绪，已跳过");
 
 
@@ -1189,7 +1192,7 @@ public sealed class MonitorService : IMonitorService, IDisposable
     }
 
     /// <summary>把当前批次快照推给订阅方（界面进度条）。</summary>
-    private void RaiseBatchProgress(string? currentFile, bool completed)
+    private void RaiseBatchProgress(string? currentFile, bool completed, string? phase = null)
     {
         var total = Volatile.Read(ref _batchTotal);
         if (total <= 0)
@@ -1203,8 +1206,42 @@ public sealed class MonitorService : IMonitorService, IDisposable
             Total = total,
             Rotated = Volatile.Read(ref _batchRotated),
             CurrentFile = string.IsNullOrEmpty(currentFile) ? null : Path.GetFileName(currentFile),
+            Phase = completed ? null : phase,
             Completed = completed
         });
+    }
+
+    /// <summary>
+    /// 推断这张图接下来会做什么，用于进度条上的阶段文案。
+    /// 都只是读头部（毫秒级），不会为了显示去解码整幅图。
+    /// </summary>
+    private static string? ResolvePhase(string fullPath)
+    {
+        try
+        {
+            var convertEnabled = AppServices.Config?.Current.ConvertProgressiveJpeg == true;
+
+            var extension = Path.GetExtension(fullPath);
+            var isJpeg = string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase);
+
+            var needsConvert = convertEnabled && isJpeg && JpegProbe.Probe(fullPath).NeedsConversion;
+
+            var probe = AppServices.Image?.Probe(fullPath);
+            var needsRotate = probe is not null && probe.OrientedWidth > probe.OrientedHeight;
+
+            return (needsRotate, needsConvert) switch
+            {
+                (true, true) => "旋转 + 转基线",
+                (true, false) => "旋转中",
+                (false, true) => "转基线中",
+                _ => "检测中"
+            };
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>把"本批完成"的判定往后推，避免连续处理时被误判为结束。</summary>

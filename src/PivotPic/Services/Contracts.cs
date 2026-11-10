@@ -46,8 +46,9 @@ public interface IImageService
     ImageProbe? Probe(string path);
     /// <param name="renameSuffix">旋转成功后追加到文件名末尾的标记；为 null 表示不改名。</param>
     /// <param name="maxSideCm">成品幅面上限（厘米）；0 表示不检查。</param>
+    /// <param name="convertProgressiveJpeg">JPEG 兼容模式：连续 JPEG 转基线。</param>
     RotationResult Process(string path, RotationMode mode, RotateDirection direction, int maxPixels,
-        string? renameSuffix = null, double maxSideCm = 0);
+        string? renameSuffix = null, double maxSideCm = 0, bool convertProgressiveJpeg = false);
 }
 
 /// <summary>自触发抑制集合：记录本进程写回的文件，避免被文件监控再次触发。</summary>

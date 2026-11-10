@@ -17,6 +17,32 @@ namespace PivotPic.ImageSmoke;
 /// </summary>
 internal static class Program
 {
+    /// <summary>
+    /// 一张 32×24 的「连续（progressive）」JPEG（PIL 生成，SOF=FFC2，DPI=300）。
+    /// 内嵌字节而不是用 WPF 现造：WPF 的 JPEG 编码器只会写基线，造不出 progressive。
+    /// </summary>
+    private const string ProgressiveJpegBase64 =
+        "/9j/4AAQSkZJRgABAQEBLAEsAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMU" +
+        "FRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU" +
+        "FBQUFBQUFBT/wgARCAAYACADASIAAhEBAxEB/8QAFwABAAMAAAAAAAAAAAAAAAAAAAQFBv/EABcBAQEBAQAAAAAAAAAAAAAAAAAE" +
+        "Bgf/2gAMAwEAAhADEAAAAcjbSGF64E8YAH//xAAXEAADAQAAAAAAAAAAAAAAAAAAAzAz/9oACAEBAAEFAhGUv//EABoRAAAHAAAA" +
+        "AAAAAAAAAAAAAAIDBBESEyD/2gAIAQMBAT8BOUWhi2P/xAAYEQACAwAAAAAAAAAAAAAAAAADEQESIP/aAAgBAgEBPwEhbwlj/8QA" +
+        "FhAAAwAAAAAAAAAAAAAAAAAAAAEw/9oACAEBAAY/AhT/AP/EABYQAQEBAAAAAAAAAAAAAAAAALEAMP/aAAgBAQABPyGS5//aAAwD" +
+        "AQACAAMAAAAQzCCC/8QAGhEBAAEFAAAAAAAAAAAAAAAAEQEgITFRYf/aAAgBAwEBPxA6yS5d8o//xAAXEQADAQAAAAAAAAAAAAAA" +
+        "AAARICGB/9oACAECAQE/EA0NT//EABcQAAMBAAAAAAAAAAAAAAAAAAAwYfD/2gAIAQEAAT8QMVL/AP/Z";
+
+
+    /// <summary>同上的竖版版本（24×32，progressive，DPI=300），用于验证「不旋转也要转基线」。</summary>
+    private const string PortraitProgressiveJpegBase64 =
+        "/9j/4AAQSkZJRgABAQEBLAEsAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMU" +
+        "FRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU" +
+        "FBQUFBQUFBT/wgARCAAgABgDASIAAhEBAxEB/8QAFwABAAMAAAAAAAAAAAAAAAAAAAQFBv/EABcBAQEBAQAAAAAAAAAAAAAAAAAE" +
+        "Bgf/2gAMAwEAAhADEAAAAcjbSGF64E8YAH//xAAXEAADAQAAAAAAAAAAAAAAAAAAAzAz/9oACAEBAAEFAhGUv//EABoRAAAHAAAA" +
+        "AAAAAAAAAAAAAAIDBBESEyD/2gAIAQMBAT8BOUWhi2P/xAAYEQACAwAAAAAAAAAAAAAAAAADEQESIP/aAAgBAgEBPwEhbwlj/8QA" +
+        "FhAAAwAAAAAAAAAAAAAAAAAAAAEw/9oACAEBAAY/AhT/AP/EABYQAQEBAAAAAAAAAAAAAAAAALEAMP/aAAgBAQABPyGS5//aAAwD" +
+        "AQACAAMAAAAQzCCC/8QAGhEBAAEFAAAAAAAAAAAAAAAAEQEgITFRYf/aAAgBAwEBPxA6yS5d8o//xAAXEQADAQAAAAAAAAAAAAAA" +
+        "AAARICGB/9oACAECAQE/EA0NT//EABcQAAMBAAAAAAAAAAAAAAAAAAAwYfD/2gAIAQEAAT8QMVL/AP/Z";
+
     /// <summary>1.2 亿像素上限，等同配置默认值。</summary>
     private const int DefaultMaxPixels = 120_000_000;
 
@@ -69,6 +95,9 @@ internal static class Program
         Run("16", "高性能引擎不设像素上限（3MP 图 + 1MP 上限 → 仍然旋转）", () => Case16(image));
         Run("17", "TIFF（带 [unlimited]）仍可正常加载并旋转", () => Case17(image));
         Run("18", "截断的 TIFF：必须判失败且不挂死", () => Case18(image));
+        Run("19", "连续 JPEG：旋转 + 转基线（FFC2→FFC0，DPI 保持）", () => Case19(image));
+        Run("20", "竖版连续 JPEG：不旋转也必须转基线", () => Case20(image));
+        Run("21", "已是基线的图：不重编码，字节不变", () => Case21(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -412,6 +441,103 @@ internal static class Program
         Check("18", "截断的 TIFF：必须判失败、分类为源图不可用、不挂死", ok,
             $"Process={result.Action} {elapsed:0} ms（{result.Message}） · " +
             $"TryRotate={outcome} · 无残留={!leftovers} · LastError={VipsNative.LastError}");
+    }
+
+    /// <summary>
+    /// JPEG 兼容模式主路径：横版 progressive → 旋转（必然重编码）+ 转基线。
+    /// 断言输出确实是 SOF FFC0（基线），且 DPI 没丢。
+    /// </summary>
+    private static void Case19(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("19", "连续 JPEG 转基线", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var path = Path.Combine(_root, "progressive_32x24.jpg");
+        File.WriteAllBytes(path, Convert.FromBase64String(ProgressiveJpegBase64));
+
+        var before = JpegProbe.Probe(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise,
+            DefaultMaxPixels, null, 0, convertProgressiveJpeg: true);
+
+        var after = JpegProbe.Probe(path);
+        var probe = image.Probe(path);
+
+        var ok = before.Kind == JpegKind.Progressive
+                 && result.Rotated
+                 && result.Converted
+                 && result.Action == "Rotated+BaselineConverted"
+                 && after.Kind == JpegKind.Baseline
+                 && probe is { PixelWidth: 24, PixelHeight: 32 }
+                 && Math.Abs((probe?.DpiX ?? 0) - 300) < 2;
+
+        Check("19", "连续 JPEG：旋转后为基线（FFC2→FFC0，DPI 保持）", ok,
+            $"前={JpegProbe.Describe(before.Kind)} 后={JpegProbe.Describe(after.Kind)} " +
+            $"Rotated={result.Rotated} Converted={result.Converted} Action={result.Action} " +
+            $"尺寸={probe?.PixelWidth}x{probe?.PixelHeight} dpi={probe?.DpiX:0}");
+    }
+
+    /// <summary>
+    /// 竖版 progressive：不需要旋转，但用户要的是「能打印」，所以仍然必须转基线。
+    /// 这条走的是真正的「只重存不旋转」路径。
+    /// </summary>
+    private static void Case20(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("20", "竖版连续 JPEG 转基线", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var path = Path.Combine(_root, "progressive_portrait_24x32.jpg");
+        File.WriteAllBytes(path, Convert.FromBase64String(PortraitProgressiveJpegBase64));
+
+        var before = JpegProbe.Probe(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise,
+            DefaultMaxPixels, null, 0, convertProgressiveJpeg: true);
+
+        var after = JpegProbe.Probe(path);
+
+        var ok = before.Kind == JpegKind.Progressive
+                 && !result.Rotated
+                 && result.Converted
+                 && result.Action == "BaselineConverted"
+                 && after.Kind == JpegKind.Baseline
+                 && after.Width == 24
+                 && after.Height == 32;
+
+        Check("20", "竖版连续 JPEG：不旋转也必须转基线", ok,
+            $"前={JpegProbe.Describe(before.Kind)} 后={JpegProbe.Describe(after.Kind)} " +
+            $"Rotated={result.Rotated} Converted={result.Converted} Action={result.Action} " +
+            $"尺寸={after.Width}x{after.Height}");
+    }
+
+    /// <summary>幂等：已经是基线的图，开关打开也不能重新编码（文件字节一个都不能变）。</summary>
+    private static void Case21(IImageService image)
+    {
+        var path = Path.Combine(_root, "progressive_32x24.jpg");
+        if (!File.Exists(path))
+        {
+            Check("21", "已是基线不重编码", false, "前置文件缺失（用例 19 未执行）");
+            return;
+        }
+
+        var before = Sha256(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise,
+            DefaultMaxPixels, null, 0, convertProgressiveJpeg: true);
+
+        var after = Sha256(path);
+        var kind = JpegProbe.Probe(path).Kind;
+
+        var ok = !result.Converted && kind == JpegKind.Baseline && before == after;
+
+        Check("21", "已是基线的图：不重编码，字节不变", ok,
+            $"Converted={result.Converted} 类型={JpegProbe.Describe(kind)} 哈希一致={before == after}");
     }
 
     // ---------- 基础设施 ----------

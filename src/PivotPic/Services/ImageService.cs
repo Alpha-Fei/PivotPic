@@ -81,7 +81,7 @@ public sealed class ImageService : IImageService
 
     /// <summary>处理单个文件：横版则旋转为竖版，失败只返回 Fail 结果而不抛异常。</summary>
     public RotationResult Process(string path, RotationMode mode, RotateDirection direction, int maxPixels,
-        string? renameSuffix = null, double maxSideCm = 0)
+        string? renameSuffix = null, double maxSideCm = 0, bool convertProgressiveJpeg = false)
     {
         var stopwatch = Stopwatch.StartNew();
 
@@ -128,15 +128,38 @@ public sealed class ImageService : IImageService
                 probe, stopwatch);
         }
 
+        // 源图是不是「连续 JPEG」，必须在**任何重编码之前**判定——旋转/写回都会改变文件编码。
+        var sourceJpegKind = JpegKind.NotJpeg;
+        if (convertProgressiveJpeg && IsJpegPath(path))
+        {
+            sourceJpegKind = JpegProbe.Probe(path).Kind;
+        }
+
+        // 竖版/正方形不需要旋转，但「连续 JPEG 转基线」照样要做：
+        // 用户要的是「这张图能打印」，跟横竖无关。
+        RotationResult FinishWithoutRotation(string action, string? message)
+        {
+            var skipped = Skip(action, message, probe, stopwatch);
+
+            if (convertProgressiveJpeg && sourceJpegKind is JpegKind.Progressive or JpegKind.Arithmetic)
+            {
+                // 接下来要写回文件，必须先登记，否则监控会把自己写回的文件当成新文件。
+                AppServices.IgnoreSet?.Remember(path);
+                return EnsureBaselineJpeg(path, skipped, stopwatch);
+            }
+
+            return skipped;
+        }
+
         // 横竖判定用「按 EXIF 校正后」的逻辑尺寸：Orientation 5~8 时宽高互换。
         if (probe.OrientedWidth < probe.OrientedHeight)
         {
-            return Skip("SkippedVertical", null, probe, stopwatch);
+            return FinishWithoutRotation("SkippedVertical", null);
         }
 
         if (probe.OrientedWidth == probe.OrientedHeight)
         {
-            return Skip("SkippedSquare", "正方形不旋转", probe, stopwatch);
+            return FinishWithoutRotation("SkippedSquare", "正方形不旋转");
         }
 
         if (IsReadOnly(path))
@@ -153,12 +176,123 @@ public sealed class ImageService : IImageService
                 ? RewriteExif(path, probe, direction, stopwatch)
                 : RotatePhysical(path, probe, direction, stopwatch, mode);
 
-            // 旋转成功后再改名：文件名加上用户自定义的标记。
+            // JPEG 兼容模式：**旋转优先，转基线在后**。
+            // 旋转失败就不做格式转换（保留失败结果，避免把「没转成功」包装成「转成功了」）。
+            // 竖版/正方形这类「跳过旋转」的 JPEG 同样要转——用户的目的只是能打印，与横竖无关。
+            //
+            // 注意：源图的类型必须在**旋转之前**读。旋转会重编码文件，
+            // 转完之后再去判断，看到的已经是新文件了。
+            if (convertProgressiveJpeg && result.Success && AllowsBaselineConversion(result)
+                && sourceJpegKind is JpegKind.Progressive or JpegKind.Arithmetic)
+            {
+                result = EnsureBaselineJpeg(path, result, stopwatch);
+            }
+
+            // 改名必须放在最后：转基线也写同一个文件，先改名会让路径对不上。
             return result.Rotated ? ApplySuffix(path, renameSuffix, result) : result;
         }
         catch (Exception ex)
         {
             return Fail(ex.Message, stopwatch, probe);
+        }
+    }
+
+    /// <summary>哪些结果之后还要做「转基线」：旋转成功，或本来就无需旋转（竖版/正方形）。</summary>
+    private static bool AllowsBaselineConversion(RotationResult result)
+    {
+        return result.Action is "Rotated" or "SkippedVertical" or "SkippedSquare";
+    }
+
+    /// <summary>是否为 JPEG（.jpg/.jpeg）。</summary>
+    private static bool IsJpegPath(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// JPEG 兼容模式：确保文件最终是基线。
+    /// <para>
+    /// 先看旋转后的实际状态：libvips 的 jpegsave 默认就是非连续，所以「旋转」这一步往往
+    /// 已经顺带把连续 JPEG 变成了基线——这种情况只记日志、不再重编码一次（避免白掉一次画质）。
+    /// 只有旋转没改变编码（竖版/正方形，或走了 EXIF 模式）时才真正执行转换。
+    /// </para>
+    /// </summary>
+    private static RotationResult EnsureBaselineJpeg(string path, RotationResult result, Stopwatch stopwatch)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? string.Empty;
+        var fileName = Path.GetFileName(path);
+
+        var current = JpegProbe.Probe(path);
+        if (!current.NeedsConversion)
+        {
+            if (current.Kind == JpegKind.Baseline)
+            {
+                // 已经是基线了。若源本来是连续，说明是旋转那一步转掉的。
+                AppServices.Log?.Info("处理", "连续 JPEG 已随旋转转为基线（未额外重编码）", directory, fileName);
+                return result.WithConversion(true, "连续 JPEG 已随旋转转为基线");
+            }
+
+            return result;
+        }
+
+        if (!VipsNative.IsAvailable)
+        {
+            AppServices.Log?.Warn("处理",
+                "连续 JPEG 未转换（高性能引擎不可用，内置引擎处理 CMYK 会产生色彩错误）", directory, fileName);
+
+            return result.WithExtraMessage("连续 JPEG 未转换：高性能引擎不可用");
+        }
+
+        if (string.IsNullOrEmpty(directory))
+        {
+            return result.WithExtraMessage("连续 JPEG 未转换：目录无效");
+        }
+
+        var extension = Path.GetExtension(path);
+        var tempPath = Path.Combine(
+            directory,
+            fileName + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".btmp" + extension);
+
+        try
+        {
+            if (!VipsNative.TrySaveBaselineJpeg(path, tempPath, current, out var error))
+            {
+                TryDelete(tempPath);
+                AppServices.Log?.Warn("处理", $"连续 JPEG 转基线失败：{error}", directory, fileName);
+                return result.WithExtraMessage("连续 JPEG 转基线失败");
+            }
+
+            try
+            {
+                File.Replace(tempPath, path, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            }
+            catch (Exception)
+            {
+                try
+                {
+                    File.Delete(path);
+                    File.Move(tempPath, path);
+                }
+                catch (Exception ex)
+                {
+                    TryDelete(tempPath);
+                    AppServices.Log?.Warn("处理", $"连续 JPEG 写回失败：{ex.Message}", directory, fileName);
+                    return result.WithExtraMessage("连续 JPEG 转基线失败：写回失败");
+                }
+            }
+
+            AppServices.Log?.Info("处理", "连续 JPEG 已转基线（Q95）", directory, fileName);
+
+            return result.WithConversion(true,
+                $"连续 JPEG 已转基线（Q95，{JpegProbe.Describe(current.Kind)}，{current.Width}×{current.Height}）");
+        }
+        catch (Exception ex)
+        {
+            TryDelete(tempPath);
+            AppServices.Log?.Warn("处理", $"连续 JPEG 转基线异常：{ex.Message}", directory, fileName);
+            return result.WithExtraMessage("连续 JPEG 转基线异常");
         }
     }
 

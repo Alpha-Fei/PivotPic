@@ -147,6 +147,12 @@ public sealed class AppConfig
     /// <summary>单图解码像素上限，超出即跳过。</summary>
     public int MaxPixels { get; set; } = 300_000_000;
 
+    /// <summary>
+    /// JPEG 兼容模式：检测到「连续（progressive）」JPEG 时转成基线标准，
+    /// 让只认基线格式的打印 RIP 能正常出图。默认开启。
+    /// </summary>
+    public bool ConvertProgressiveJpeg { get; set; } = true;
+
     /// <summary>旋转成功后是否在文件名结尾追加标记。</summary>
     public bool AddSuffix { get; set; }
 
@@ -291,6 +297,9 @@ public sealed class RotationResult
 {
     public bool Success { get; init; }
     public bool Rotated { get; init; }
+
+    /// <summary>本次是否把「连续 JPEG」重编码成了基线（JPEG 兼容模式）。</summary>
+    public bool Converted { get; init; }
     public string Action { get; init; } = string.Empty;
     public string? Message { get; init; }
     public int BeforeWidth { get; init; }
@@ -307,7 +316,28 @@ public sealed class RotationResult
     {
         Success = Success,
         Rotated = Rotated,
+        Converted = Converted,
         Action = Action,
+        Message = string.IsNullOrWhiteSpace(Message) ? extra : Message + "；" + extra,
+        BeforeWidth = BeforeWidth,
+        BeforeHeight = BeforeHeight,
+        AfterWidth = AfterWidth,
+        AfterHeight = AfterHeight,
+        ElapsedMs = ElapsedMs
+    };
+
+    /// <summary>
+    /// 带上「转基线」的结果：动作名按组合拼（Rotated / BaselineConverted / Rotated+BaselineConverted），
+    /// 这样日志动作列一眼能看出这张图经历了什么。
+    /// </summary>
+    public RotationResult WithConversion(bool converted, string extra) => new()
+    {
+        Success = Success,
+        Rotated = Rotated,
+        Converted = converted,
+        Action = converted
+            ? (Rotated ? "Rotated+BaselineConverted" : "BaselineConverted")
+            : Action,
         Message = string.IsNullOrWhiteSpace(Message) ? extra : Message + "；" + extra,
         BeforeWidth = BeforeWidth,
         BeforeHeight = BeforeHeight,

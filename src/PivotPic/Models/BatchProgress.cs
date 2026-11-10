@@ -22,6 +22,12 @@ public sealed class BatchProgress
     /// <summary>当前正在处理（或刚处理完）的文件名。</summary>
     public string? CurrentFile { get; init; }
 
+    /// <summary>
+    /// 当前阶段（人话）：旋转中 / 转基线中 / 旋转 + 转基线 / 检测中。
+    /// 用户明确要求进度条上写清楚「正在处理的是哪种类型」，光有文件名不够。
+    /// </summary>
+    public string? Phase { get; init; }
+
     /// <summary>本批是否已结束。</summary>
     public bool Completed { get; init; }
 
