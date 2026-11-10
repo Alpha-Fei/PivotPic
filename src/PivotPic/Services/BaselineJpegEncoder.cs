@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using BitMiracle.LibJpeg.Classic;
 
@@ -151,12 +152,196 @@ public static class BaselineJpegEncoder
 
             cinfo.jpeg_finish_compress();
 
+            // 必须先关掉文件句柄：重打包是「读全文 → 改写 → 覆盖写」，
+            // 流还开着的话，方法退出时的 Flush/Dispose 会把我们改好的内容覆盖回去。
+            stream.Flush();
+            stream.Dispose();
+
+            // libjpeg 会把每张量化表/霍夫曼表各写成一个标记段（2 个 DQT + 4 个 DHT），
+            // 而 Photoshop 是把全部表塞进「一个 DQT 段 + 一个 DHT 段」。老打印 RIP 往往只读
+            // 第一个 DQT/DHT 段，于是只能拿到 1 张表，整份图直接拒收——这是用户反复失败的关键。
+            // 编码完做一次纯字节重打包：合并 DQT/DHT，并把 APP14 的 flags0 对齐成 PS 的 0x4000。
+            RepackMarkersForPrint(targetPath);
+
             return true;
         }
         catch (Exception ex)
         {
             error = ex.Message;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 重打包头部标记：把多段 DQT / DHT 各自合并成一段，并把 Adobe APP14 的 flags0 对齐成 0x4000。
+    /// <para>
+    /// 只动头部字节，熵编码数据一字不改，所以画质与文件大小几乎不变。
+    /// 目标结构（= Photoshop 存的基线）：
+    /// <c>1 个 DQT 段（2 张表，132 字节）/ 1 个 DHT 段（4 张表，约 418 字节）/ APP14 = 41..64 40 00 00 00 02</c>。
+    /// </para>
+    /// </summary>
+    private static void RepackMarkersForPrint(string path)
+    {
+        byte[] data;
+
+        try
+        {
+            data = File.ReadAllBytes(path);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        if (data.Length < 4 || data[0] != 0xFF || data[1] != 0xD8)
+        {
+            return;
+        }
+
+        // 1) 扫头部，收集 DQT / DHT 的 payload 并记录首次出现的位置。
+        var markers = new List<(int Marker, byte[] Payload)>();
+        var scan = 2;
+        var sosIndex = data.Length;
+
+        while (scan + 3 < data.Length)
+        {
+            if (data[scan] != 0xFF)
+            {
+                break;
+            }
+
+            var marker = data[scan + 1];
+
+            if (marker == 0xD9)
+            {
+                sosIndex = scan;
+                break;
+            }
+
+            if (marker == 0xDA)
+            {
+                sosIndex = scan;
+                break;
+            }
+
+            if (marker == 0xD8 || (marker >= 0xD0 && marker <= 0xD7))
+            {
+                scan += 2;
+                continue;
+            }
+
+            var length = (data[scan + 2] << 8) | data[scan + 3];
+            if (length < 2 || scan + 2 + length > data.Length)
+            {
+                break;
+            }
+
+            var payload = new byte[length - 2];
+            Buffer.BlockCopy(data, scan + 4, payload, 0, payload.Length);
+            markers.Add((marker, payload));
+
+            scan += 2 + length;
+        }
+
+        var dqt = new List<byte>();
+        var dht = new List<byte>();
+        var firstDqt = -1;
+        var firstDht = -1;
+
+        for (var i = 0; i < markers.Count; i++)
+        {
+            if (markers[i].Marker == 0xDB)
+            {
+                if (firstDqt < 0)
+                {
+                    firstDqt = i;
+                }
+
+                dqt.AddRange(markers[i].Payload);
+            }
+            else if (markers[i].Marker == 0xC4)
+            {
+                if (firstDht < 0)
+                {
+                    firstDht = i;
+                }
+
+                dht.AddRange(markers[i].Payload);
+            }
+        }
+
+        // 2) 重建头部。
+        var output = new List<byte>(data.Length + 32) { 0xFF, 0xD8 };
+
+        for (var i = 0; i < markers.Count; i++)
+        {
+            var (marker, payload) = markers[i];
+
+            if (marker == 0xDB)
+            {
+                if (i == firstDqt && dqt.Count > 0)
+                {
+                    AppendSegment(output, 0xDB, dqt);
+                }
+
+                continue;
+            }
+
+            if (marker == 0xC4)
+            {
+                if (i == firstDht && dht.Count > 0)
+                {
+                    AppendSegment(output, 0xC4, dht);
+                }
+
+                continue;
+            }
+
+            if (marker == 0xEE && payload.Length >= 12
+                && payload[0] == 'A' && payload[1] == 'd' && payload[2] == 'o')
+            {
+                // PS 的 APP14：Adobe + version 0x0064 + flags0 0x4000 + flags1 0x0000 + transform 2
+                AppendSegment(output, 0xEE, new byte[]
+                {
+                    0x41, 0x64, 0x6F, 0x62, 0x65, 0x00,
+                    0x64, 0x40, 0x00, 0x00, 0x00, 0x02
+                });
+
+                continue;
+            }
+
+            AppendSegment(output, marker, payload);
+        }
+
+        // 3) 原样接上 SOS 之后的熵编码数据。
+        for (var i = sosIndex; i < data.Length; i++)
+        {
+            output.Add(data[i]);
+        }
+
+        try
+        {
+            File.WriteAllBytes(path, output.ToArray());
+        }
+        catch (Exception)
+        {
+            // 重打包失败不影响「至少是个合法基线」，保持原文件即可。
+        }
+    }
+
+    /// <summary>追加一个带长度字段的标记段。</summary>
+    private static void AppendSegment(List<byte> output, int marker, IReadOnlyList<byte> payload)
+    {
+        var length = payload.Count + 2;
+
+        output.Add(0xFF);
+        output.Add((byte)marker);
+        output.Add((byte)(length >> 8));
+        output.Add((byte)(length & 0xFF));
+
+        for (var i = 0; i < payload.Count; i++)
+        {
+            output.Add(payload[i]);
         }
     }
 }
