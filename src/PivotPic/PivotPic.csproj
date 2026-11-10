@@ -62,4 +62,10 @@
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+
+  <ItemGroup>
+    <!-- 纯托管 libjpeg 移植：用来产出与 Photoshop 结构一致的基线 JPEG（YCCK/optimize/restart）。 -->
+    <PackageReference Include="BitMiracle.LibJpeg.NET" Version="1.5.324" />
+  </ItemGroup>
+
 </Project>

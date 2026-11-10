@@ -126,7 +126,7 @@ public sealed class ImageService : IImageService
             {
                 // 接下来要写回文件，必须先登记，否则监控会把自己写回的文件当成新文件。
                 AppServices.IgnoreSet?.Remember(path);
-                return EnsureBaselineJpeg(path, skipped, stopwatch);
+                return EnsureBaselineJpeg(path, skipped, sourceWasProgressive: true, stopwatch);
             }
 
             return skipped;
@@ -185,7 +185,7 @@ public sealed class ImageService : IImageService
             if (convertProgressiveJpeg && result.Success && AllowsBaselineConversion(result)
                 && sourceJpegKind is JpegKind.Progressive or JpegKind.Arithmetic)
             {
-                result = EnsureBaselineJpeg(path, result, stopwatch);
+                result = EnsureBaselineJpeg(path, result, sourceWasProgressive: true, stopwatch);
             }
 
             // 改名必须放在最后：转基线也写同一个文件，先改名会让路径对不上。
@@ -434,22 +434,32 @@ public sealed class ImageService : IImageService
     /// 只有旋转没改变编码（竖版/正方形，或走了 EXIF 模式）时才真正执行转换。
     /// </para>
     /// </summary>
-    private static RotationResult EnsureBaselineJpeg(string path, RotationResult result, Stopwatch stopwatch)
+    private static RotationResult EnsureBaselineJpeg(
+        string path, RotationResult result, bool sourceWasProgressive, Stopwatch stopwatch)
     {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path)) ?? string.Empty;
         var fileName = Path.GetFileName(path);
 
         var current = JpegProbe.Probe(path);
+
         if (!current.NeedsConversion)
         {
-            if (current.Kind == JpegKind.Baseline)
+            if (current.Kind != JpegKind.Baseline)
             {
-                // 已经是基线了。若源本来是连续，说明是旋转那一步转掉的。
-                AppServices.Log?.Info("处理", "连续 JPEG 已随旋转转为基线（未额外重编码）", directory, fileName);
-                return result.WithConversion(true, "连续 JPEG 已随旋转转为基线");
+                return result;
             }
 
-            return result;
+            // 文件现在是基线：若源本来就是基线，说明没什么可做（幂等，字节不动）。
+            // 但**源是连续**时不能就这么收工——旋转那一步是 libvips 写的，
+            // 它的结构（1 张量化表 / 标准霍夫曼 / CMYK transform=0）正是老 RIP 不认的那种。
+            // 所以「源连续 + 刚旋转过」必须再走一遍我们的编码器。
+            if (!sourceWasProgressive || !result.Rotated)
+            {
+                return result;
+            }
+
+            AppServices.Log?.Info("处理", "旋转输出需要按打印结构重编码（2 张量化表 / optimize / YCCK）",
+                directory, fileName);
         }
 
         if (!VipsNative.IsAvailable)
@@ -472,11 +482,40 @@ public sealed class ImageService : IImageService
 
         try
         {
-            if (!VipsNative.TrySaveBaselineJpeg(path, tempPath, current, out var error))
+            // 先从「刚被改写过的文件」复制一份快照再解码。
+            // 原因：libvips 有操作缓存，同一个路径在同一进程里二次加载可能拿到改动前的旧像素
+            // （实测：旋转完再读，读回来还是旋转前的尺寸）；换个从没出现过的文件名就绝不会命中。
+            // 快照用 .btmp 后缀，扫描与清理逻辑已经把它排除在外。
+            var snapshotPath = Path.Combine(
+                directory,
+                fileName + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".btmp" + extension);
+
+            var encodeSource = path;
+            try
             {
-                TryDelete(tempPath);
-                AppServices.Log?.Warn("处理", $"连续 JPEG 转基线失败：{error}", directory, fileName);
-                return result.WithExtraMessage("连续 JPEG 转基线失败");
+                File.Copy(path, snapshotPath, overwrite: true);
+                encodeSource = snapshotPath;
+            }
+            catch (Exception)
+            {
+                encodeSource = path;   // 复制失败就直接读原文件，最多是命中旧缓存，不影响正确性以外的部分
+            }
+
+            // 首选 LibJpeg 编码器：结构与 Photoshop 一致（2 张量化表 / optimize DHT / APP14 transform=2 YCCK）。
+            // libvips 的 jpegsave 只作兜底：它写的结构对不上老 RIP，但至少是个合法基线。
+            var encoded = BaselineJpegEncoder.TryEncode(encodeSource, tempPath, out var error);
+            TryDelete(snapshotPath);
+
+            if (!encoded)
+            {
+                AppServices.Log?.Warn("处理", $"LibJpeg 编码失败，回退 libvips：{error}", directory, fileName);
+
+                if (!VipsNative.TrySaveBaselineJpeg(path, tempPath, current, out var vipsError))
+                {
+                    TryDelete(tempPath);
+                    AppServices.Log?.Warn("处理", $"连续 JPEG 转基线失败：{vipsError}", directory, fileName);
+                    return result.WithExtraMessage("连续 JPEG 转基线失败");
+                }
             }
 
             // 写回前文件很可能正被别的程序占用（Photoshop 之类会持锁，哪怕是"只打开看看"）。

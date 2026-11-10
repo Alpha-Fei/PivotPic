@@ -43,6 +43,18 @@ internal static class Program
         "AQACAAMAAAAQzCCC/8QAGhEBAAEFAAAAAAAAAAAAAAAAEQEgITFRYf/aAAgBAwEBPxA6yS5d8o//xAAXEQADAQAAAAAAAAAAAAAA" +
         "AAARICGB/9oACAECAQE/EA0NT//EABcQAAMBAAAAAAAAAAAAAAAAAAAwYfD/2gAIAQEAAT8QMVL/AP/Z";
 
+
+    /// <summary>一张 48×40 的 CMYK JPEG（PIL 生成，Adobe APP14 transform=0），用于验证编码器输出结构。</summary>
+    private const string CmykJpegBase64 =
+        "/9j/7gAOQWRvYmUAZAAAAAAA/9sAQwADAgICAgIDAgICAwMDAwQGBAQEBAQIBgYFBgkICgoJCAkJCgwPDAoLDgsJCQ0RDQ4PEBAR" +
+        "EAoMEhMSEBMPEBAQ/8AAFAgAKAAwBEMRAE0RAFkRAEsRAP/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIB" +
+        "AwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZH" +
+        "SElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV" +
+        "1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/aAA4EQwBNAFkASwAAPwD9OK+PK+cq/VOrum/8tPw/rXtf7N3/ADMX/bp/7WrE8Sf8" +
+        "u3/A/wClUdS/5Z/j/Sr1e11iVSooooooooooooqD7Fbf88v/AB41xP8Awpj4a/8AQt/+Tlx/8XV7+2tT/wCfn/xxf8Kn+23P/PX/" +
+        "AMdFPihihz5a4z15rb8N+DPDXhH7T/wjum/ZPtezzv30km7bnb99jjG49PWoLm9ubzb9ol37M4+UDGfp9Kjlmlmx5jZx04qStuoK" +
+        "ZRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRX//2Q==";
+
     /// <summary>1.2 亿像素上限，等同配置默认值。</summary>
     private const int DefaultMaxPixels = 120_000_000;
 
@@ -99,6 +111,8 @@ internal static class Program
         Run("20", "竖版连续 JPEG：不旋转也必须转基线", () => Case20(image));
         Run("21", "已是基线的图：不重编码，字节不变", () => Case21(image));
         Run("22", "超幅面跳过的连续 JPEG 也要转基线", () => Case22(image));
+        Run("23", "转基线输出结构：SOF0 + DQT≥2 + RST>0 + DPI 保留", () => Case23Test(image));
+        Run("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", () => Case24Test(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -574,6 +588,180 @@ internal static class Program
 
         Check("21", "已是基线的图：不重编码，字节不变", ok,
             $"Converted={result.Converted} 类型={JpegProbe.Describe(kind)} 哈希一致={before == after}");
+    }
+
+    /// <summary>JPEG 结构摘要（只解析头部标记，够断言用）。</summary>
+    private sealed class JpegStructure
+    {
+        public int Sof { get; set; } = -1;
+
+        public int[] Ids { get; set; } = Array.Empty<int>();
+
+        public int QuantTables { get; set; }
+
+        public int DhtSegments { get; set; }
+
+        public int Restarts { get; set; }
+
+        public int AdobeTransform { get; set; } = -1;
+
+        public int Dpi { get; set; }
+
+        public bool HasIcc { get; set; }
+    }
+
+    private static JpegStructure ParseJpeg(string path)
+    {
+        var d = File.ReadAllBytes(path);
+        var result = new JpegStructure();
+        var i = 2;
+
+        while (i < d.Length - 1)
+        {
+            if (d[i] != 0xFF)
+            {
+                i++;
+                continue;
+            }
+
+            int m = d[i + 1];
+
+            if (m == 0x00)
+            {
+                i += 2;
+                continue;
+            }
+
+            if (m == 0xD9 || m == 0xDA)
+            {
+                break;
+            }
+
+            if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7))
+            {
+                i += 2;
+                continue;
+            }
+
+            if (i + 4 > d.Length)
+            {
+                break;
+            }
+
+            var len = (d[i + 2] << 8) | d[i + 3];
+            var p = i + 4;
+
+            if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC && p + 6 < d.Length)
+            {
+                result.Sof = m;
+                var n = d[p + 5];
+                var ids = new int[n];
+                for (var k = 0; k < n && p + 6 + k * 3 < d.Length; k++)
+                {
+                    ids[k] = d[p + 6 + k * 3];
+                }
+
+                result.Ids = ids;
+            }
+            else if (m == 0xDB)
+            {
+                result.QuantTables += (len - 2) / 65;   // 多段要累加，不能覆盖
+            }
+            else if (m == 0xC4)
+            {
+                result.DhtSegments++;
+            }
+            else if (m == 0xE0 && len >= 14 && p + 12 < d.Length && d[p] == 'J' && d[p + 1] == 'F')
+            {
+                result.Dpi = (d[p + 8] << 8) | d[p + 9];
+            }
+            else if (m == 0xE2 && p + 3 < d.Length && d[p] == 'I' && d[p + 1] == 'C' && d[p + 2] == 'C')
+            {
+                result.HasIcc = true;
+            }
+            else if (m == 0xEE && p + 11 < d.Length && d[p] == 'A' && d[p + 1] == 'd')
+            {
+                result.AdobeTransform = d[p + 11];
+            }
+
+            i += 2 + len;
+        }
+
+        for (var k = 0; k < d.Length - 1; k++)
+        {
+            if (d[k] == 0xFF && d[k + 1] >= 0xD0 && d[k + 1] <= 0xD7)
+            {
+                result.Restarts++;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// RGB 连续 JPEG 转换后的结构：必须是 SOF0、至少 2 张量化表、有重启标记、DPI 不丢。
+    /// （RGB 没有 APP14，YCCK 的结构由用例 24 覆盖。）
+    /// </summary>
+    private static void Case23Test(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("23", "转基线输出结构", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        // 直接测编码器本身：不走旋转，避免 libvips 重写文件时把 JFIF 密度丢掉（那属于另一处问题了）。
+        var src = Path.Combine(_root, "struct_rgb_32x24.jpg");
+        File.WriteAllBytes(src, Convert.FromBase64String(ProgressiveJpegBase64));
+
+        var dst = Path.Combine(_root, "struct_rgb_out.jpg");
+        var encoded = BaselineJpegEncoder.TryEncode(src, dst, out var error);
+
+        if (!encoded)
+        {
+            Check("23", "转基线输出结构", false, $"编码失败：{error}");
+            return;
+        }
+
+        var s = ParseJpeg(dst);
+        var ok = s.Sof == 0xC0 && s.QuantTables >= 2 && s.Restarts > 0 && Math.Abs(s.Dpi - 300) <= 1;
+
+        Check("23", "转基线输出结构：SOF0 + DQT>=2 + RST>0 + DPI 保留", ok,
+            $"SOF=FF{s.Sof:X2} DQT={s.QuantTables} DHT段={s.DhtSegments} RST={s.Restarts} DPI={s.Dpi}");
+    }
+
+    /// <summary>
+    /// CMYK 走 LibJpeg 编码器：必须 SOF0 / 分量 ID 1..4 / 2 张量化表 / 有重启标记 / APP14 transform=2（YCCK）。
+    /// 这四项正是用户那台老 RIP 认 PS、不认 libvips 的关键差异。
+    /// </summary>
+    private static void Case24Test(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("24", "CMYK 转基线结构", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var src = Path.Combine(_root, "struct_cmyk_48x40.jpg");
+        File.WriteAllBytes(src, Convert.FromBase64String(CmykJpegBase64));
+
+        var dst = Path.Combine(_root, "struct_cmyk_out.jpg");
+        var encoded = BaselineJpegEncoder.TryEncode(src, dst, out var error);
+
+        if (!encoded)
+        {
+            Check("24", "CMYK 转基线结构", false, $"编码失败：{error}");
+            return;
+        }
+
+        var s = ParseJpeg(dst);
+        var idsOk = s.Ids.Length == 4 && s.Ids[0] == 1 && s.Ids[1] == 2 && s.Ids[2] == 3 && s.Ids[3] == 4;
+
+        var ok = s.Sof == 0xC0 && idsOk && s.QuantTables >= 2 && s.Restarts > 0 && s.AdobeTransform == 2;
+
+        Check("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", ok,
+            $"SOF=FF{s.Sof:X2} IDs=[{string.Join(",", s.Ids)}] DQT={s.QuantTables} RST={s.Restarts} " +
+            $"transform={s.AdobeTransform} DHT段={s.DhtSegments}");
     }
 
     // ---------- 基础设施 ----------

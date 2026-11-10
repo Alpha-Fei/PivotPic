@@ -38,4 +38,9 @@
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 服务层现在用 LibJpeg 重编码基线 JPEG，测试工程要一起引用 -->
+    <PackageReference Include="BitMiracle.LibJpeg.NET" Version="1.5.324" />
+  </ItemGroup>
+
 </Project>

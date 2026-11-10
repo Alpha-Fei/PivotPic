@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace PivotPic.Services;
@@ -128,6 +129,122 @@ public static class JpegProbe
         {
             return new JpegInfo { Kind = JpegKind.Unreadable };
         }
+    }
+
+    /// <summary>一段 APPn 标记（payload 原样，不含长度字段）。</summary>
+    public sealed class AppSegment
+    {
+        public int Marker { get; init; }
+
+        public byte[] Payload { get; init; } = Array.Empty<byte>();
+    }
+
+    /// <summary>从源 JPEG 里能原样带走的元数据。</summary>
+    public sealed class SourceMetadata
+    {
+        /// <summary>APP0(仅 3 分量)/APP1/APP2/APP13。APP14 由编码器自己写（transform=2）。</summary>
+        public List<AppSegment> Segments { get; } = new();
+
+        /// <summary>JFIF 水平密度（DPI）；没写 JFIF 时为 0。</summary>
+        public int DpiX { get; set; }
+
+        /// <summary>JFIF 垂直密度（DPI）；没写 JFIF 时为 0。</summary>
+        public int DpiY { get; set; }
+    }
+
+    /// <summary>
+    /// 读出源文件的 APP 段与 JFIF 密度，供 LibJpeg 重编码时原样写回。
+    /// <para>
+    /// PS 存出来的 CMYK JPEG 没有 APP0，DPI 实际存在 XMP(APP1) 与 Photoshop IRB(APP13) 里，
+    /// 所以「原样搬运 APP 段」比「自己编一份 DPI」更可靠。APP14 例外：
+    /// 那一段的 transform 必须由我们自己写成 2（YCCK），不能照抄。
+    /// </para>
+    /// </summary>
+    public static SourceMetadata ReadMetadata(string path)
+    {
+        var meta = new SourceMetadata();
+
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+
+            if (stream.ReadByte() != 0xFF || stream.ReadByte() != 0xD8)
+            {
+                return meta;
+            }
+
+            long budget = MaxHeaderBytes;
+
+            while (budget > 0)
+            {
+                var marker = ReadMarker(stream);
+                if (marker < 0)
+                {
+                    break;
+                }
+
+                if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
+                {
+                    continue;
+                }
+
+                if (marker == 0xD9 || marker == 0xDA)
+                {
+                    break;
+                }
+
+                var length = ReadBigEndianInt16(stream);
+                if (length < 2)
+                {
+                    break;
+                }
+
+                var payload = new byte[length - 2];
+                var read = 0;
+                while (read < payload.Length)
+                {
+                    var n = stream.Read(payload, read, payload.Length - read);
+                    if (n <= 0)
+                    {
+                        break;
+                    }
+
+                    read += n;
+                }
+
+                if (read < payload.Length)
+                {
+                    break;
+                }
+
+                budget -= payload.Length + 4;
+
+                // APP0 只取 JFIF 密度；APP14 由编码器重写；其它 APPn 原样保留。
+                if (marker == 0xE0)
+                {
+                    if (payload.Length >= 12
+                        && payload[0] == 'J' && payload[1] == 'F' && payload[2] == 'I' && payload[3] == 'F')
+                    {
+                        meta.DpiX = (payload[8] << 8) | payload[9];
+                        meta.DpiY = (payload[10] << 8) | payload[11];
+                    }
+
+                    continue;
+                }
+
+                if (marker >= 0xE1 && marker <= 0xEF && marker != 0xEE)
+                {
+                    meta.Segments.Add(new AppSegment { Marker = marker, Payload = payload });
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // 元数据读不出来不影响主流程：最多丢 XMP/ICC。
+        }
+
+        return meta;
     }
 
     /// <summary>把类型翻译成日志/界面可读的说明。</summary>

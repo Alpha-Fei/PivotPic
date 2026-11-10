@@ -27,6 +27,9 @@ internal static class VipsNative
     private static VipsWriteToFile? _writeToFile;
     private static VipsGetInt? _getWidth;
     private static VipsGetInt? _getHeight;
+    private static VipsGetInt? _getBands;
+    private static VipsWriteToMemory? _writeToMemory;
+    private static GFree? _gFree;
     private static GObjectUnref? _unref;
     private static VipsErrorBuffer? _errorBuffer;
 
@@ -47,6 +50,12 @@ internal static class VipsNative
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int VipsGetInt(IntPtr image);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate IntPtr VipsWriteToMemory(IntPtr image, out UIntPtr size);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void GFree(IntPtr pointer);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void GObjectUnref(IntPtr obj);
@@ -109,6 +118,21 @@ internal static class VipsNative
                 _getHeight = GetExport<VipsGetInt>(handle, "vips_image_get_height");
                 _unref = GetExport<GObjectUnref>(handle, "g_object_unref");
                 _errorBuffer = GetExport<VipsErrorBuffer>(handle, "vips_error_buffer");
+
+                // 这三个只给「取原始像素」用（LibJpeg 重编码需要）。老版本 libvips 可能没有，
+                // 缺了就降级成「不支持新编码器」，不能因此把整个引擎判死。
+                try
+                {
+                    _getBands = GetExport<VipsGetInt>(handle, "vips_image_get_bands");
+                    _writeToMemory = GetExport<VipsWriteToMemory>(handle, "vips_image_write_to_memory");
+                    _gFree = GetExport<GFree>(handle, "g_free");
+                }
+                catch (Exception)
+                {
+                    _getBands = null;
+                    _writeToMemory = null;
+                    _gFree = null;
+                }
 
                 if (_init!(dllPath) != 0)
                 {
@@ -181,6 +205,99 @@ internal static class VipsNative
 
         /// <summary>写回失败（可回退）。</summary>
         WriteFailed
+    }
+
+    /// <summary>从 libvips 读出来的原始像素（行优先、通道交错）。</summary>
+    public sealed class RawPixels
+    {
+        public int Width { get; init; }
+
+        public int Height { get; init; }
+
+        /// <summary>通道数：4=CMYK，3=RGB，1=灰度。</summary>
+        public int Bands { get; init; }
+
+        public byte[] Data { get; init; } = Array.Empty<byte>();
+    }
+
+    /// <summary>
+    /// 把整幅图读成内存里的原始像素，交给 LibJpeg 重编码用。
+    /// <para>
+    /// 走 <c>vips_image_write_to_memory</c>：一次拿到 headerless 的交错数据，
+    /// 不需要落临时 .raw 文件再读回来（少一次 130 MB 的磁盘往返）。
+    /// </para>
+    /// </summary>
+    public static bool TryReadPixels(string path, out RawPixels? pixels, out string error)
+    {
+        pixels = null;
+        error = string.Empty;
+
+        if (!IsAvailable || _writeToMemory is null || _gFree is null || _getBands is null)
+        {
+            error = "高性能引擎不支持像素直读（libvips 版本过旧）";
+            return false;
+        }
+
+        IntPtr image = IntPtr.Zero;
+        IntPtr buffer = IntPtr.Zero;
+
+        try
+        {
+            image = _newFromFile!(BuildLoadPath(path), null);
+            if (image == IntPtr.Zero)
+            {
+                error = ReadError();
+                return false;
+            }
+
+            var width = _getWidth!(image);
+            var height = _getHeight!(image);
+            var bands = _getBands!(image);
+
+            if (width <= 0 || height <= 0 || bands <= 0)
+            {
+                var reason = ReadError();
+                error = string.IsNullOrWhiteSpace(reason) ? $"尺寸非法：{width}×{height}×{bands}" : reason;
+                return false;
+            }
+
+            buffer = _writeToMemory!(image, out var size);
+            if (buffer == IntPtr.Zero)
+            {
+                error = ReadError();
+                return false;
+            }
+
+            var expected = (long)width * height * bands;
+            if ((long)size < expected)
+            {
+                error = $"像素数据长度异常：得到 {size}，期望 {expected}";
+                return false;
+            }
+
+            var data = new byte[expected];
+            Marshal.Copy(buffer, data, 0, (int)expected);
+
+            pixels = new RawPixels { Width = width, Height = height, Bands = bands, Data = data };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                _gFree!(buffer);
+            }
+
+            if (image != IntPtr.Zero)
+            {
+                _unref!(image);
+            }
+        }
     }
 
     /// <summary>
