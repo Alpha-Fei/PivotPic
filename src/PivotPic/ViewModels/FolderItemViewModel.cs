@@ -132,6 +132,23 @@ public sealed class FolderItemViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>JPEG 兼容模式（按目录）：连续 JPEG 转基线标准。</summary>
+    public bool ConvertProgressiveJpeg
+    {
+        get => Model.ConvertProgressiveJpeg;
+        set
+        {
+            if (Model.ConvertProgressiveJpeg == value)
+            {
+                return;
+            }
+
+            Model.ConvertProgressiveJpeg = value;
+            OnPropertyChanged();
+            PersistConfig();
+        }
+    }
+
     /// <summary>幅面上限的输入文本（厘米）。</summary>
     public string MaxSideCmText
     {

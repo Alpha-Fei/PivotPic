@@ -58,7 +58,6 @@ public partial class SettingsPage : UserControl
     private void FillSuffix(AppConfig config)
     {
         ToggleSuffix.IsChecked = config.AddSuffix;
-        ToggleConvertProgressive.IsChecked = config.ConvertProgressiveJpeg;
         SuffixBox.Text = config.Suffix;
         SuffixBox.IsEnabled = config.AddSuffix;
         UpdateSuffixHint(config.AddSuffix);
@@ -67,29 +66,6 @@ public partial class SettingsPage : UserControl
     private void UpdateSuffixHint(bool enabled)
     {
         SuffixHint.Text = enabled ? "示例：图片名" + SuffixBox.Text + ".jpg" : "关闭时不改名";
-    }
-
-    /// <summary>JPEG 兼容模式开关：连续 JPEG → 基线标准。</summary>
-    private void OnConvertProgressiveClick(object sender, RoutedEventArgs e)
-    {
-        if (_loading)
-        {
-            return;
-        }
-
-        var configService = AppServices.Config;
-        if (configService is null)
-        {
-            return;
-        }
-
-        var enabled = ToggleConvertProgressive.IsChecked == true;
-        configService.Current.ConvertProgressiveJpeg = enabled;
-        configService.SaveDebounced();
-
-        AppServices.Log?.Info("设置", enabled
-            ? "JPEG 兼容模式已开启：连续 JPEG 将转为基线"
-            : "JPEG 兼容模式已关闭：不再改动 JPEG 编码");
     }
 
     /// <summary>开关切换：打开时若后缀为空则补默认值。</summary>

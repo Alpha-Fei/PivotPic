@@ -419,11 +419,16 @@ public sealed class ConfigService : IConfigService, IDisposable
             config.SchemaVersion = 4;
         }
 
-        // v4 → v5：新增「JPEG 兼容模式」（连续 JPEG 转基线）。
-        // 默认开启：打印 RIP 只认基线，这个能力对用户是纯收益；不想改文件的人可以关掉。
+        // v4 → v5：新增「JPEG 兼容模式」（连续 JPEG 转基线），**按目录**生效。
+        // 旧配置里是全局开关，迁移时把它的值复制给每个目录，避免用户已有的偏好被静默丢掉。
+        // 新目录的默认值由 WatchedFolder.ConvertProgressiveJpeg = true 提供。
         if (config.SchemaVersion < 5)
         {
-            config.ConvertProgressiveJpeg = true;
+            foreach (var folder in config.Folders)
+            {
+                folder.ConvertProgressiveJpeg = config.ConvertProgressiveJpeg;
+            }
+
             config.SchemaVersion = CurrentSchemaVersion;
         }
 

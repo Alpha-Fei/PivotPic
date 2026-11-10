@@ -104,6 +104,12 @@ public sealed class WatchedFolder
     /// <summary>按文件名关键词覆盖上限的规则表；未命中时用 <see cref="MaxSideCm"/>。</summary>
     public List<SizeRule> SizeRules { get; set; } = new();
 
+    /// <summary>
+    /// JPEG 兼容模式（按目录）：检测到「连续（progressive）」JPEG 就转成基线标准，
+    /// 让只认基线的打印 RIP 能出图。默认开启；竖版/正方形不旋转但仍会转换。
+    /// </summary>
+    public bool ConvertProgressiveJpeg { get; set; } = true;
+
     /// <summary>该目录的今日已处理计数（内存态，不持久化）。</summary>
     [JsonIgnore]
     public int ProcessedToday { get; set; }
@@ -148,8 +154,8 @@ public sealed class AppConfig
     public int MaxPixels { get; set; } = 300_000_000;
 
     /// <summary>
-    /// JPEG 兼容模式：检测到「连续（progressive）」JPEG 时转成基线标准，
-    /// 让只认基线格式的打印 RIP 能正常出图。默认开启。
+    /// 【已下放】JPEG 兼容模式已改为**按目录**设置（见 <see cref="WatchedFolder.ConvertProgressiveJpeg"/>）。
+    /// 本字段只在 v4→v5 配置迁移时被读取一次，运行时不再使用；保留是为兼容旧配置文件。
     /// </summary>
     public bool ConvertProgressiveJpeg { get; set; } = true;
 

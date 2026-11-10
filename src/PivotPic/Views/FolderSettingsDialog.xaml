@@ -282,6 +282,25 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel>
+                                    <TextBlock Text="JPEG 兼容模式" Style="{StaticResource Typo.Body}" />
+                                    <TextBlock Text="连续（progressive）JPEG 打印 RIP 无法识别；开启后自动转为基线标准（保留色彩配置与 DPI），竖版图同样转换"
+                                               Margin="0,3,0,0" Style="{StaticResource Typo.Secondary}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                                <ToggleButton Grid.Column="1" Style="{StaticResource Toggle.Switch}"
+                                              VerticalAlignment="Center"
+                                              IsChecked="{Binding ConvertProgressiveJpeg, Mode=TwoWay}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource Card}" Padding="18,14" Margin="0,12,0,0">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
                                     <TextBlock Text="成品幅面上限" Style="{StaticResource Typo.Body}" />
                                     <TextBlock Text="按像素 ÷ DPI 换算成品尺寸，宽和高都超过才跳过旋转"
                                                Margin="0,3,0,0" Style="{StaticResource Typo.Secondary}" />

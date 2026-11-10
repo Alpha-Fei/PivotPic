@@ -1075,7 +1075,7 @@ public sealed class MonitorService : IMonitorService, IDisposable
         // 大图（几百 MB 的喷绘 TIFF）单张要跑几秒到几十秒，期间界面上如果连文件名都不动，
         // 用户看到的就是「进度条卡住」——而实际上它在干活。
         // 用户还要求写清「处理的是哪种类型」，所以这里带上阶段。
-        RaiseBatchProgress(item.FullPath, completed: false, ResolvePhase(item.FullPath));
+        RaiseBatchProgress(item.FullPath, completed: false, ResolvePhase(item.Folder, item.FullPath));
 
         try
         {
@@ -1161,7 +1161,7 @@ public sealed class MonitorService : IMonitorService, IDisposable
 
         var result = AppServices.Image?.Process(
                          item.FullPath, mode, direction, maxPixels, suffix, maxSideCm,
-                         config?.ConvertProgressiveJpeg == true)
+                         item.Folder.ConvertProgressiveJpeg)
                      ?? RotationResult.Fail("图像服务未就绪，已跳过");
 
 
@@ -1215,11 +1215,12 @@ public sealed class MonitorService : IMonitorService, IDisposable
     /// 推断这张图接下来会做什么，用于进度条上的阶段文案。
     /// 都只是读头部（毫秒级），不会为了显示去解码整幅图。
     /// </summary>
-    private static string? ResolvePhase(string fullPath)
+    private static string? ResolvePhase(WatchedFolder folder, string fullPath)
     {
         try
         {
-            var convertEnabled = AppServices.Config?.Current.ConvertProgressiveJpeg == true;
+            // JPEG 兼容模式是**按目录**的设置，进度文案要跟该目录的实际行为一致。
+            var convertEnabled = folder.ConvertProgressiveJpeg;
 
             var extension = Path.GetExtension(fullPath);
             var isJpeg = string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)

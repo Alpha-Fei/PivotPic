@@ -174,6 +174,28 @@ foreach (var (attempt, shouldKeep) in mountRetryCases)
         shouldKeep.ToString());
 }
 
+// ---------------------------------------------------------------- JPEG 兼容模式按目录
+// 用户明确要求：这是「每个监控路径的独立设置」，不是一个全局开关。
+// 这里验证三件事：默认开启、目录之间互不影响、设置页绑定（FolderItemViewModel）写回的是**该目录自己的**模型。
+Section("JPEG 兼容模式按目录生效（ConvertProgressiveJpeg）");
+
+var dirA = new WatchedFolder { Path = "A:////目录A" };
+var dirB = new WatchedFolder { Path = "A:////目录B" };
+
+Check("新目录默认开启", dirA.ConvertProgressiveJpeg.ToString(), "True");
+
+dirB.ConvertProgressiveJpeg = false;
+Check("目录B关闭生效", dirB.ConvertProgressiveJpeg.ToString(), "False");
+Check("目录A不受影响", dirA.ConvertProgressiveJpeg.ToString(), "True");
+
+var vm = new FolderItemViewModel(dirA);
+vm.ConvertProgressiveJpeg = false;
+Check("VM 关闭写回模型", dirA.ConvertProgressiveJpeg.ToString(), "False");
+Check("VM 操作不影响其他目录", dirB.ConvertProgressiveJpeg.ToString(), "False");
+
+vm.ConvertProgressiveJpeg = true;
+Check("VM 重新开启写回模型", dirA.ConvertProgressiveJpeg.ToString(), "True");
+
 // ---------------------------------------------------------------- 汇总
 Console.WriteLine();
 Console.WriteLine(new string('-', 52));
