@@ -20,18 +20,6 @@ public partial class MainWindow : Window
     private string _currentPage = "monitor";
     private bool _exiting;
 
-    /// <summary>关闭动画进行中：挡住重复点击，否则会触发两次 Close。</summary>
-    private bool _closing;
-
-    /// <summary>刚做过「最小化动画」，等窗口恢复到 Normal 时要反向播一遍。</summary>
-    private bool _pendingRestoreAnimation;
-
-    /// <summary>整窗动画器（动的是 Window 自身，不是窗口内容）。</summary>
-    private readonly WindowAnimator _animator;
-
-    /// <summary>普通态（非最大化）下的窗口矩形，最大化/还原/从托盘恢复都靠它回到原位。</summary>
-    private Rect _normalBounds;
-
     /// <summary>选中态滑动块：靠 TranslateTransform 平滑移动到目标项。</summary>
     private void AnimateNavIndicator(int index)
     {
@@ -98,14 +86,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        // 动画器要在 RestoreWindowPlacement / WireShellEvents 之前就绪：
-        // 那两个方法都可能触发 StateChanged，而里面的恢复动画要用到它。
-        _animator = new WindowAnimator(this);
-
         InitializeComponent();
 
         RestoreWindowPlacement();
-        _normalBounds = _animator.CurrentBounds;
         WireTitleBar();
         WireShellEvents();
         WireUpdateEvents();
@@ -323,27 +306,6 @@ public partial class MainWindow : Window
     {
         StateChanged += (_, _) =>
         {
-            // 从任务栏恢复：整窗从略小一点的位置放大回原位（与最小化的收缩方向相反）。
-            if (WindowState == WindowState.Normal && _pendingRestoreAnimation)
-            {
-                _pendingRestoreAnimation = false;
-
-                if (WindowAnimator.AnimationEnabled && !_animator.IsAnimating)
-                {
-                    _animator.PlayRestoreFromTaskbar(_normalBounds, () =>
-                        _animator.ApplyBounds(_normalBounds));
-                }
-                else
-                {
-                    _animator.ApplyBounds(_normalBounds);
-                }
-            }
-            else if (WindowState == WindowState.Normal && !_animator.IsAnimating && _animator.CurrentBounds.Width > 0)
-            {
-                // 普通态的位置尺寸变化（拖动/改大小）随时记下来，还原时要回到这里。
-                _normalBounds = _animator.CurrentBounds;
-            }
-
             var maximized = WindowState == WindowState.Maximized;
             GlyphMax.Visibility = maximized ? Visibility.Collapsed : Visibility.Visible;
             GlyphRestore.Visibility = maximized ? Visibility.Visible : Visibility.Collapsed;
@@ -447,184 +409,25 @@ public partial class MainWindow : Window
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
     {
-        if (_closing)
-        {
-            return;
-        }
-
-        // 系统动画被用户关掉、或正在播动画：直接切状态，不播。
-        if (!WindowAnimator.AnimationEnabled || _animator.IsAnimating)
-        {
-            WindowState = WindowState.Minimized;
-            return;
-        }
-
-        // 整窗向任务栏方向收缩 + 淡出，完成后再真正最小化。
-        var (screen, work) = GetMonitorBoundsDip();
-
-        _animator.PlayMinimize(_animator.CurrentBounds, screen, work, () =>
-        {
-            WindowState = WindowState.Minimized;
-
-            // 最小化后必须复位：否则从任务栏恢复出来是透明窗口，尺寸也可能停在收缩态。
-            _animator.ResetVisualState();
-            _animator.ApplyBounds(_normalBounds);
-            _pendingRestoreAnimation = true;
-        });
+        // 交给系统：恢复 DWM 帧之后，最小化/恢复的过渡由 Windows 自己做。
+        SystemCommands.MinimizeWindow(this);
     }
 
     private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize();
 
     private void ToggleMaximize()
     {
-        if (_closing)
-        {
-            return;
-        }
-
-        if (!WindowAnimator.AnimationEnabled || _animator.IsAnimating)
-        {
-            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-            return;
-        }
-
-        var (_, work) = GetMonitorBoundsDip();
-
         if (WindowState == WindowState.Maximized)
         {
-            // 还原：先把状态切回 Normal 并**立刻**把矩形按最大化矩形写死，避免系统先弹回普通尺寸再被我们拉走（会闪）。
-            var maximizedRect = _animator.CurrentBounds;
-            WindowState = WindowState.Normal;
-            _animator.ApplyBounds(maximizedRect);
-
-            _animator.PlayRestore(_normalBounds, () =>
-            {
-                _animator.ApplyBounds(_normalBounds);
-                WindowState = WindowState.Normal;
-            });
-
-            return;
+            SystemCommands.RestoreWindow(this);
         }
-
-        // 记录普通态矩形，供还原时回到原位。
-        if (WindowState == WindowState.Normal)
+        else
         {
-            _normalBounds = _animator.CurrentBounds;
+            SystemCommands.MaximizeWindow(this);
         }
-
-        // 最大化：从当前矩形平滑过渡到**当前所在显示器**的工作区（多屏必须按窗口所在屏算）。
-        _animator.PlayMaximize(work, () =>
-        {
-            _animator.ApplyBounds(work);
-            WindowState = WindowState.Maximized;
-        });
     }
 
-    private void OnCloseClick(object sender, RoutedEventArgs e)
-    {
-        if (_closing)
-        {
-            return;
-        }
-
-        // 「最小化到托盘」不是关闭，不播关闭动画。
-        var action = AppServices.Config?.Current.CloseAction ?? CloseAction.MinimizeToTray;
-
-        if (action == CloseAction.MinimizeToTray || !WindowAnimator.AnimationEnabled)
-        {
-            Close();
-            return;
-        }
-
-        _closing = true;
-
-        _animator.PlayClose(() =>
-        {
-            try
-            {
-                Close();
-            }
-            finally
-            {
-                // 关闭可能被 OnClosing 取消，必须复位，否则下次打开是透明窗。
-                _animator.ResetVisualState();
-                _closing = false;
-            }
-        });
-    }
-
-    /// <summary>
-    /// 取窗口**当前所在显示器**的完整矩形与工作区，单位是 DIP。
-    /// <para>
-    /// 不能用 <c>SystemParameters.WorkArea</c>：那是主屏，多屏下最大化会贴错屏幕。
-    /// Win32 拿到的是物理像素，这里用窗口自己的 DPI 变换换算成 DIP，避免高分屏缩放下尺寸错乱。
-    /// </para>
-    /// </summary>
-    private (Rect Screen, Rect WorkArea) GetMonitorBoundsDip()
-    {
-        try
-        {
-            var handle = new WindowInteropHelper(this).Handle;
-            var monitor = handle == IntPtr.Zero ? IntPtr.Zero : MonitorFromWindow(handle, MonitorDefaultToNearest);
-
-            if (monitor != IntPtr.Zero)
-            {
-                var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-
-                if (GetMonitorInfo(monitor, ref info))
-                {
-                    return (ToDip(info.Monitor), ToDip(info.Work));
-                }
-            }
-        }
-        catch (Exception)
-        {
-            // 取不到就退到主屏工作区，动画仍然可用。
-        }
-
-        var fallback = SystemParameters.WorkArea;
-        return (fallback, fallback);
-    }
-
-    /// <summary>物理像素矩形 → DIP（按本窗口所在显示器的缩放）。</summary>
-    private Rect ToDip(NativeRect rect)
-    {
-        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice
-                        ?? Matrix.Identity;
-
-        var topLeft = transform.Transform(new Point(rect.Left, rect.Top));
-        var bottomRight = transform.Transform(new Point(rect.Right, rect.Bottom));
-
-        return new Rect(topLeft, bottomRight);
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public NativeRect Monitor;
-        public NativeRect Work;
-        public int Flags;
-    }
-
-    private const uint MonitorDefaultToNearest = 2;
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
 
 
     private void OnNavClick(object sender, RoutedEventArgs e)
