@@ -384,6 +384,7 @@ public sealed class ImageService : IImageService
             }
 
             AppServices.Log?.Info("处理", "连续 JPEG 已转基线（Q95）", directory, fileName);
+            TryDelete(tempPath);   // 就地覆写不会消耗临时文件，成功后必须自己清掉
 
             return result.WithConversion(true,
                 $"连续 JPEG 已转基线（Q95，{JpegProbe.Describe(current.Kind)}，{current.Width}×{current.Height}）");

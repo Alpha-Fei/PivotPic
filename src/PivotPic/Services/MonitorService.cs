@@ -600,8 +600,11 @@ public sealed class MonitorService : IMonitorService, IDisposable
             return false;
         }
 
-        // 本服务自己写回的临时文件是 *.tmp，必须排除，否则会陷入自触发循环。
-        if (fullPath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+        // 本服务自己写回的临时文件必须排除，否则会陷入自触发循环。
+        // 命名形如 xxx.jpg.1234abcd.btmp.jpg（保住了原扩展名），只判 ".tmp" 后缀挡不住。
+        if (fullPath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+            || fullPath.Contains(".vtmp.", StringComparison.OrdinalIgnoreCase)
+            || fullPath.Contains(".btmp.", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
