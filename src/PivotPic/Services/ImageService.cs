@@ -211,13 +211,19 @@ public sealed class ImageService : IImageService
         error = string.Empty;
         Exception? last = null;
 
+        // 让 libvips/WPF 留下的文件句柄先释放干净：这两类句柄如果还占着，
+        // 网络盘上连「只写打开」都会被拒（本地盘看不出来）。
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            // 1) 就地覆写：只用写权限，网络盘上最可靠。
+            // 1) 就地覆写：必须用 ReadWrite 打开。实测网络盘上「只写打开」会被拒，
+            //    而 r+b（读写）在同样的锁状态下是通的——两者共享位不同。
             try
             {
                 using (var source = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                using (var target = new FileStream(targetPath, FileMode.Open, FileAccess.Write,
+                using (var target = new FileStream(targetPath, FileMode.Open, FileAccess.ReadWrite,
                            FileShare.ReadWrite | FileShare.Delete))
                 {
                     target.SetLength(0);
