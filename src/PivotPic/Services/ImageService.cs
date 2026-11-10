@@ -198,6 +198,99 @@ public sealed class ImageService : IImageService
     }
 
     /// <summary>
+    /// 把 JPEG 的分量 ID 归一成标准的 1..N。
+    /// <para>
+    /// libvips 的 jpegsave 会把图像通道名当成 SOF/SOS 里的分量 ID：CMYK 写成 67,77,89,75
+    /// （ASCII 的 C/M/Y/K）。标准 JPEG 分量 ID 应为 1..4，很多打印 RIP 的解析器遇到非标准 ID
+    /// 会直接把文件判为非法（用户实测：PS 存的认、我们转的不认，差别就在这）。
+    /// 只改头里的 ID 字节，不动熵编码数据，风险极低。
+    /// </para>
+    /// </summary>
+    private static void NormalizeJpegComponentIds(string path)
+    {
+        try
+        {
+            var data = File.ReadAllBytes(path);
+            var changed = false;
+            var map = new Dictionary<int, int>();
+            var next = 1;
+
+            var i = 2;
+            while (i < data.Length - 9)
+            {
+                if (data[i] != 0xFF)
+                {
+                    i++;
+                    continue;
+                }
+
+                var marker = data[i + 1];
+                if (marker == 0xD8 || marker == 0xD9 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
+                {
+                    i += 2;
+                    continue;
+                }
+
+                if (marker == 0xDA)
+                {
+                    // SOS：分量表里同样存了 ID，必须一起改。
+                    var sosCount = data[i + 4];
+                    for (var c = 0; c < sosCount; c++)
+                    {
+                        var pos = i + 5 + c * 2;
+                        if (map.TryGetValue(data[pos], out var normalized))
+                        {
+                            data[pos] = (byte)normalized;
+                            changed = true;
+                        }
+                    }
+
+                    break;
+                }
+
+                var seglen = (data[i + 2] << 8) | data[i + 3];
+
+                // SOF 段：C0–CF，排除 C4(DHT)/C8(JPG)/CC(DAC)
+                if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC)
+                {
+                    var comp = data[i + 9];
+                    for (var c = 0; c < comp; c++)
+                    {
+                        var pos = i + 10 + c * 3;
+                        var old = (int)data[pos];
+                        if (!map.TryGetValue(old, out var normalized))
+                        {
+                            normalized = next++;
+                            map[old] = normalized;
+                        }
+
+                        if (old != normalized)
+                        {
+                            data[pos] = (byte)normalized;
+                            changed = true;
+                        }
+                    }
+                }
+
+                i += 2 + seglen;
+            }
+
+            if (changed)
+            {
+                File.WriteAllBytes(path, data);
+                AppServices.Log?.Info("处理", "已把分量 ID 归一为标准 1..N（打印软件兼容）",
+                    Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileName(path));
+            }
+        }
+        catch (Exception ex)
+        {
+            // 归一失败不影响主流程：文件仍是合法 JPEG，只是部分 RIP 可能不认。
+            AppServices.Log?.Warn("处理", $"分量 ID 归一失败：{ex.Message}",
+                Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileName(path));
+        }
+    }
+
+    /// <summary>
     /// 写回文件，遇到占用/共享冲突时退避重试。
     /// <para>
     /// 为什么不用 File.Replace / File.Move / FileStream：**网络盘（SMB）上它们的共享语义与 Win32 不一致**。
@@ -382,6 +475,10 @@ public sealed class ImageService : IImageService
                     directory, fileName);
                 return result.WithExtraMessage("连续 JPEG 转基线失败：文件被占用");
             }
+
+            // libvips 会把通道名当分量 ID 写进 SOF/SOS（CMYK → 67,77,89,75 = 'C','M','Y','K'）。
+            // 打印软件普遍只认标准的 1..4，看到字母编码会直接拒收——用户实测「PS 转的认、我们转的不认」就是这个原因。
+            NormalizeJpegComponentIds(path);
 
             AppServices.Log?.Info("处理", "连续 JPEG 已转基线（Q95）", directory, fileName);
             TryDelete(tempPath);   // 就地覆写不会消耗临时文件，成功后必须自己清掉
