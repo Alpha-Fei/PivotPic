@@ -256,17 +256,17 @@ public sealed class ImageService : IImageService
     private static extern IntPtr CreateFileNative(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
         IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "WriteFile", SetLastError = true)]
     private static extern bool WriteFileNative(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite,
         out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "SetEndOfFile", SetLastError = true)]
     private static extern bool SetEndOfFileNative(IntPtr hFile);
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "FlushFileBuffers", SetLastError = true)]
     private static extern bool FlushFileBuffersNative(IntPtr hFile);
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     private static extern bool CloseHandleNative(IntPtr hObject);
 
     private static readonly IntPtr InvalidHandleValue = new(-1);
