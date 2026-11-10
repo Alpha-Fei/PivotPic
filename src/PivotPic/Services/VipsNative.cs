@@ -250,19 +250,23 @@ internal static class VipsNative
     }
 
     /// <summary>
-    /// 基线 JPEG 的保存选项：Q95、非连续、标准 Huffman。
+    /// 基线 JPEG 的保存选项：Q95、非连续、标准 Huffman + 每 MCU 行一个重启标记。
     /// <para>
-    /// 注意：本仓库携带的 libvips 构建里 jpegsave **没有** subsample/downsample 属性
-    /// （实测会报 "no property named `subsample'"，且带了任何未知属性整个保存都会失败），
-    /// 所以色度抽样交由 libvips 默认策略处理，不要再往选项串里加这类参数。
+    /// 两个易踩的坑（都实测过）：
+    /// 1) 本仓库的 libvips 构建里 jpegsave **没有** subsample/downsample 属性，
+    ///    带上任何未知属性整个保存都会失败（"no property named"）；
+    /// 2) 不写 restart-interval 的话输出里一个 RST 标记都没有，而 Photoshop 存的基线
+    ///    每个 MCU 行都有重启点（DRI = ceil(宽/8)）。很多打印 RIP 靠 RST 定位 MCU 行，
+    ///    没有就整份拒收——用户实测「PS 转的认、我们转的不认」这是主因之一。
     /// </para>
     /// </summary>
     private static string BuildBaselineJpegOptions(JpegInfo info)
     {
         // optimize-coding=false 很关键：否则输出的是「基线已优化」，部分老旧 RIP 仍认不出。
-        // info 参数保留用于日志与将来的扩展（当前不参与选项拼装）。
-        _ = info;
-        return "Q=95,interlace=false,optimize-coding=false";
+        // 重启间隔按「一行 MCU」取：我们输出 4:4:4，MCU 宽 8 像素。
+        var restartInterval = Math.Max(1, (info.Width + 7) / 8);
+
+        return $"Q=95,interlace=false,optimize-coding=false,restart-interval={restartInterval}";
     }
 
     /// <summary>
