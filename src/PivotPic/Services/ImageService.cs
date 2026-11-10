@@ -277,9 +277,23 @@ public sealed class ImageService : IImageService
 
             if (changed)
             {
-                File.WriteAllBytes(path, data);
-                AppServices.Log?.Info("处理", "已把分量 ID 归一为标准 1..N（打印软件兼容）",
-                    Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileName(path));
+                // 必须走 Win32 写回：File.WriteAllBytes 在文件被内存映射时会抛
+                // 「请求的操作无法在使用用户映射区域打开的文件上执行」。
+                var temp = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".idfix";
+                File.WriteAllBytes(temp, data);
+
+                if (TryWriteBackNative(temp, path, out var writeError))
+                {
+                    AppServices.Log?.Info("处理", "已把分量 ID 归一为标准 1..N（打印软件兼容）",
+                        Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileName(path));
+                }
+                else
+                {
+                    AppServices.Log?.Warn("处理", $"分量 ID 归一写回失败：{writeError}",
+                        Path.GetDirectoryName(path) ?? string.Empty, Path.GetFileName(path));
+                }
+
+                TryDelete(temp);
             }
         }
         catch (Exception ex)
