@@ -98,6 +98,7 @@ internal static class Program
         Run("19", "连续 JPEG：旋转 + 转基线（FFC2→FFC0，DPI 保持）", () => Case19(image));
         Run("20", "竖版连续 JPEG：不旋转也必须转基线", () => Case20(image));
         Run("21", "已是基线的图：不重编码，字节不变", () => Case21(image));
+        Run("22", "超幅面跳过的连续 JPEG 也要转基线", () => Case22(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -514,6 +515,41 @@ internal static class Program
             $"前={JpegProbe.Describe(before.Kind)} 后={JpegProbe.Describe(after.Kind)} " +
             $"Rotated={result.Rotated} Converted={result.Converted} Action={result.Action} " +
             $"尺寸={after.Width}x{after.Height}");
+    }
+
+    /// <summary>
+    /// 用户实测暴露的漏洞：文件被「成品幅面上限」跳过时（SkippedTooBigCm），
+    /// 转基线也被一起跳过了。跳过旋转 ≠ 跳过处理——超幅面的连续 JPEG 同样要能打印。
+    /// </summary>
+    private static void Case22(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("22", "超幅面跳过仍转基线", true, "跳过：本机 libvips 不可用（该分支走不到）");
+            return;
+        }
+
+        var path = Path.Combine(_root, "progressive_toobig_24x32.jpg");
+        File.WriteAllBytes(path, Convert.FromBase64String(PortraitProgressiveJpegBase64));
+
+        var before = JpegProbe.Probe(path);
+
+        // maxSideCm=0.1：24×32 像素 @300dpi ≈ 0.20×0.27 cm，两边都超过 0.1 cm → 走 SkippedTooBigCm
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise,
+            DefaultMaxPixels, null, 0.1, convertProgressiveJpeg: true);
+
+        var after = JpegProbe.Probe(path);
+
+        var ok = before.Kind == JpegKind.Progressive
+                 && !result.Rotated
+                 && result.Converted
+                 && result.Action == "BaselineConverted"
+                 && result.Message != null && result.Message.Contains("超过上限")
+                 && after.Kind == JpegKind.Baseline;
+
+        Check("22", "超幅面跳过的连续 JPEG 也要转基线", ok,
+            $"前={JpegProbe.Describe(before.Kind)} 后={JpegProbe.Describe(after.Kind)} " +
+            $"Converted={result.Converted} Action={result.Action} Message={result.Message}");
     }
 
     /// <summary>幂等：已经是基线的图，开关打开也不能重新编码（文件字节一个都不能变）。</summary>

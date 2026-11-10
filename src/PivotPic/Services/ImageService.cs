@@ -108,27 +108,6 @@ public sealed class ImageService : IImageService
             return Skip("SkippedEmpty", "文件长度为 0", probe, stopwatch);
         }
 
-        // 高性能引擎按用户要求**不设像素上限**（它逐块处理，内存可控；
-        // 以前的 1.5 Gpx「绝对天花板」也随之取消，用户怎么设都不影响它）。
-        // 内置引擎沿用用户配置的 MaxPixels。
-        var usingVips = mode == RotationMode.LibVips && VipsNative.IsAvailable;
-        var effectiveMaxPixels = usingVips ? 0 : maxPixels;
-
-        if (effectiveMaxPixels > 0 && probe.PixelCount > effectiveMaxPixels)
-        {
-            return Skip("SkippedTooLarge",
-                $"像素数 {probe.PixelCount:N0} 超过上限 {effectiveMaxPixels:N0}（可在设置里调大）",
-                probe, stopwatch);
-        }
-
-        // 成品幅面检查：按像素与 DPI 换算成厘米，宽高“都”超过上限才跳过（0 表示未启用）。
-        if (maxSideCm > 0 && probe.WidthCm > maxSideCm && probe.HeightCm > maxSideCm)
-        {
-            return Skip("SkippedTooBigCm",
-                $"成品 {probe.WidthCm:0.#}×{probe.HeightCm:0.#} cm 两边均超过上限 {maxSideCm:0.#} cm",
-                probe, stopwatch);
-        }
-
         // 源图是不是「连续 JPEG」，必须在**任何重编码之前**判定——旋转/写回都会改变文件编码。
         var sourceJpegKind = JpegKind.NotJpeg;
         if (convertProgressiveJpeg && IsJpegPath(path))
@@ -136,8 +115,9 @@ public sealed class ImageService : IImageService
             sourceJpegKind = JpegProbe.Probe(path).Kind;
         }
 
-        // 竖版/正方形不需要旋转，但「连续 JPEG 转基线」照样要做：
-        // 用户要的是「这张图能打印」，跟横竖无关。
+        // 「不旋转」的各类跳过，但「连续 JPEG 转基线」照样要做：
+        // 用户要的是「这张图能打印」，跟跳过原因（竖版/正方形/超幅面/超像素）无关。
+        // 这些路径只是「不旋转」，不等于「不处理」。
         RotationResult FinishWithoutRotation(string action, string? message)
         {
             var skipped = Skip(action, message, probe, stopwatch);
@@ -150,6 +130,25 @@ public sealed class ImageService : IImageService
             }
 
             return skipped;
+        }
+
+        // 高性能引擎按用户要求**不设像素上限**（它逐块处理，内存可控；
+        // 以前的 1.5 Gpx「绝对天花板」也随之取消，用户怎么设都不影响它）。
+        // 内置引擎沿用用户配置的 MaxPixels。
+        var usingVips = mode == RotationMode.LibVips && VipsNative.IsAvailable;
+        var effectiveMaxPixels = usingVips ? 0 : maxPixels;
+
+        if (effectiveMaxPixels > 0 && probe.PixelCount > effectiveMaxPixels)
+        {
+            return FinishWithoutRotation("SkippedTooLarge",
+                $"像素数 {probe.PixelCount:N0} 超过上限 {effectiveMaxPixels:N0}（可在设置里调大）");
+        }
+
+        // 成品幅面检查：按像素与 DPI 换算成厘米，宽高“都”超过上限才跳过（0 表示未启用）。
+        if (maxSideCm > 0 && probe.WidthCm > maxSideCm && probe.HeightCm > maxSideCm)
+        {
+            return FinishWithoutRotation("SkippedTooBigCm",
+                $"成品 {probe.WidthCm:0.#}×{probe.HeightCm:0.#} cm 两边均超过上限 {maxSideCm:0.#} cm");
         }
 
         // 横竖判定用「按 EXIF 校正后」的逻辑尺寸：Orientation 5~8 时宽高互换。

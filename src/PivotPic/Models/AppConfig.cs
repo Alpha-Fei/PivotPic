@@ -336,21 +336,28 @@ public sealed class RotationResult
     /// 带上「转基线」的结果：动作名按组合拼（Rotated / BaselineConverted / Rotated+BaselineConverted），
     /// 这样日志动作列一眼能看出这张图经历了什么。
     /// </summary>
-    public RotationResult WithConversion(bool converted, string extra) => new()
+    public RotationResult WithConversion(bool converted, string extra)
     {
-        Success = Success,
-        Rotated = Rotated,
-        Converted = converted,
-        Action = converted
-            ? (Rotated ? "Rotated+BaselineConverted" : "BaselineConverted")
-            : Action,
-        Message = string.IsNullOrWhiteSpace(Message) ? extra : Message + "；" + extra,
-        BeforeWidth = BeforeWidth,
-        BeforeHeight = BeforeHeight,
-        AfterWidth = AfterWidth,
-        AfterHeight = AfterHeight,
-        ElapsedMs = ElapsedMs
-    };
+        // 拼接放在初始化器外面：初始化器里的 Message = Message + ... 有遮蔽歧义，
+        // 会把跳过原因（如「成品 … 超过上限」）丢掉。
+        var combined = string.IsNullOrWhiteSpace(Message) ? extra : Message + "；" + extra;
+
+        return new RotationResult
+        {
+            Success = Success,
+            Rotated = Rotated,
+            Converted = converted,
+            Action = converted
+                ? (Rotated ? "Rotated+BaselineConverted" : "BaselineConverted")
+                : Action,
+            Message = combined,
+            BeforeWidth = BeforeWidth,
+            BeforeHeight = BeforeHeight,
+            AfterWidth = AfterWidth,
+            AfterHeight = AfterHeight,
+            ElapsedMs = ElapsedMs
+        };
+    }
 
     public static RotationResult Fail(string message) =>
         new() { Success = false, Action = "Failed", Message = message };
