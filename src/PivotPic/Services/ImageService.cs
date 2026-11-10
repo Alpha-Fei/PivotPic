@@ -201,9 +201,10 @@ public sealed class ImageService : IImageService
     /// <summary>
     /// 写回文件，遇到占用/共享冲突时退避重试。
     /// <para>
-    /// 关键：**网络盘上不能用 File.Replace / File.Delete**。实测（A: SMB 共享）只要 libvips
-    /// 读过该文件，删除/替换权限就会被拒（WinError 5），且 unref 之后仍然如此；但**写权限始终可用**。
-    /// 所以主路径是「就地覆写」：打开目标文件写入新内容，完全不碰删除语义。
+    /// 为什么不用 File.Replace / File.Move / FileStream：**网络盘（SMB）上它们的共享语义与 Win32 不一致**。
+    /// 实测（A: 共享）：libvips 读过该文件后 File.Delete/File.Replace 必失败，托管 FileStream 打开也会被拒；
+    /// 但用 CreateFile(GENERIC_READ|GENERIC_WRITE, FILE_SHARE_ALL) 就能写进去。
+    /// 所以这里直接走 Win32，参数就是被验证可用的那一组。
     /// </para>
     /// </summary>
     private static bool TryWriteBackWithRetry(string tempPath, string targetPath, out string error)
@@ -211,34 +212,18 @@ public sealed class ImageService : IImageService
         error = string.Empty;
         Exception? last = null;
 
-        // 让 libvips/WPF 留下的文件句柄先释放干净：这两类句柄如果还占着，
-        // 网络盘上连「只写打开」都会被拒（本地盘看不出来）。
+        // 先让托管层残留的句柄（WPF 解码器、libvips 缓存）释放掉。
         GC.Collect();
         GC.WaitForPendingFinalizers();
+        GC.Collect();
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
-            // 1) 就地覆写：必须用 ReadWrite 打开。实测网络盘上「只写打开」会被拒，
-            //    而 r+b（读写）在同样的锁状态下是通的——两者共享位不同。
-            try
+            if (TryWriteBackNative(tempPath, targetPath, out error))
             {
-                using (var source = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                using (var target = new FileStream(targetPath, FileMode.Open, FileAccess.ReadWrite,
-                           FileShare.ReadWrite | FileShare.Delete))
-                {
-                    target.SetLength(0);
-                    source.CopyTo(target);
-                    target.Flush(true);
-                }
-
                 return true;
             }
-            catch (Exception ex)
-            {
-                last = ex;
-            }
 
-            // 2) 本地盘/未被占用时，原子替换更快更干净；失败不影响主路径。
             try
             {
                 File.Replace(tempPath, targetPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
@@ -249,12 +234,76 @@ public sealed class ImageService : IImageService
                 last = ex;
             }
 
-            // 0.6s / 1.2s / 2.4s：够短不拖累批次，够长能覆盖"用户切回 PS 关掉文档"的手速。
             Thread.Sleep(600 * (1 << attempt));
         }
 
-        error = last?.Message ?? "未知原因";
+        if (string.IsNullOrEmpty(error))
+        {
+            error = last?.Message ?? "未知原因";
+        }
+
         return false;
+    }
+
+    // ---------------- Win32 写回 ----------------
+
+    private const uint GenericRead = 0x80000000;
+    private const uint GenericWrite = 0x40000000;
+    private const uint FileShareAll = 0x00000007;
+    private const uint OpenExisting = 3;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr CreateFileNative(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool WriteFileNative(IntPtr hFile, byte[] lpBuffer, uint nNumberOfBytesToWrite,
+        out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetEndOfFileNative(IntPtr hFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FlushFileBuffersNative(IntPtr hFile);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandleNative(IntPtr hObject);
+
+    private static readonly IntPtr InvalidHandleValue = new(-1);
+
+    /// <summary>
+    /// 用 CreateFile(GENERIC_READ|GENERIC_WRITE, FILE_SHARE_ALL) 就地覆写目标文件。
+    /// 这组参数在网络盘上被实测验证可用（见方法注释）。
+    /// </summary>
+    private static bool TryWriteBackNative(string tempPath, string targetPath, out string error)
+    {
+        error = string.Empty;
+        var data = File.ReadAllBytes(tempPath);
+        var handle = CreateFileNative(targetPath, GenericRead | GenericWrite, FileShareAll,
+            IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+
+        if (handle == IntPtr.Zero || handle == InvalidHandleValue)
+        {
+            error = "CreateFile 失败（错误码 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）";
+            return false;
+        }
+
+        try
+        {
+            if (!WriteFileNative(handle, data, (uint)data.Length, out var written, IntPtr.Zero) || written != data.Length)
+            {
+                error = "WriteFile 失败（错误码 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）";
+                return false;
+            }
+
+            SetEndOfFileNative(handle);
+            FlushFileBuffersNative(handle);
+            return true;
+        }
+        finally
+        {
+            CloseHandleNative(handle);
+        }
     }
 
     /// <summary>哪些结果之后还要做「转基线」：旋转成功，或本来就无需旋转（竖版/正方形）。</summary>
