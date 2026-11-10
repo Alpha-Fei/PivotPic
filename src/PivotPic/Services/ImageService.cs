@@ -200,7 +200,11 @@ public sealed class ImageService : IImageService
 
     /// <summary>
     /// 写回文件，遇到占用/共享冲突时退避重试。
-    /// Photoshop 等程序打开图片时会长时间持锁，一次失败就放弃会让「明明能转却转不成」。
+    /// <para>
+    /// 关键：**网络盘上不能用 File.Replace / File.Delete**。实测（A: SMB 共享）只要 libvips
+    /// 读过该文件，删除/替换权限就会被拒（WinError 5），且 unref 之后仍然如此；但**写权限始终可用**。
+    /// 所以主路径是「就地覆写」：打开目标文件写入新内容，完全不碰删除语义。
+    /// </para>
     /// </summary>
     private static bool TryWriteBackWithRetry(string tempPath, string targetPath, out string error)
     {
@@ -209,25 +213,34 @@ public sealed class ImageService : IImageService
 
         for (var attempt = 0; attempt < 4; attempt++)
         {
+            // 1) 就地覆写：只用写权限，网络盘上最可靠。
+            try
+            {
+                using (var source = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var target = new FileStream(targetPath, FileMode.Open, FileAccess.Write,
+                           FileShare.ReadWrite | FileShare.Delete))
+                {
+                    target.SetLength(0);
+                    source.CopyTo(target);
+                    target.Flush(true);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+            }
+
+            // 2) 本地盘/未被占用时，原子替换更快更干净；失败不影响主路径。
             try
             {
                 File.Replace(tempPath, targetPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
                 return true;
             }
-            catch (Exception ex1)
+            catch (Exception ex)
             {
-                last = ex1;
-
-                try
-                {
-                    File.Delete(targetPath);
-                    File.Move(tempPath, targetPath);
-                    return true;
-                }
-                catch (Exception ex2)
-                {
-                    last = ex2;
-                }
+                last = ex;
             }
 
             // 0.6s / 1.2s / 2.4s：够短不拖累批次，够长能覆盖"用户切回 PS 关掉文档"的手速。
