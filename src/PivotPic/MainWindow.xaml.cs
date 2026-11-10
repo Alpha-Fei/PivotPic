@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -24,6 +25,12 @@ public partial class MainWindow : Window
 
     /// <summary>刚做过「最小化动画」，等窗口恢复到 Normal 时要反向播一遍。</summary>
     private bool _pendingRestoreAnimation;
+
+    /// <summary>整窗动画器（动的是 Window 自身，不是窗口内容）。</summary>
+    private readonly WindowAnimator _animator;
+
+    /// <summary>普通态（非最大化）下的窗口矩形，最大化/还原/从托盘恢复都靠它回到原位。</summary>
+    private Rect _normalBounds;
 
     /// <summary>选中态滑动块：靠 TranslateTransform 平滑移动到目标项。</summary>
     private void AnimateNavIndicator(int index)
@@ -91,9 +98,14 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        // 动画器要在 RestoreWindowPlacement / WireShellEvents 之前就绪：
+        // 那两个方法都可能触发 StateChanged，而里面的恢复动画要用到它。
+        _animator = new WindowAnimator(this);
+
         InitializeComponent();
 
         RestoreWindowPlacement();
+        _normalBounds = _animator.CurrentBounds;
         WireTitleBar();
         WireShellEvents();
         WireUpdateEvents();
@@ -311,21 +323,25 @@ public partial class MainWindow : Window
     {
         StateChanged += (_, _) =>
         {
-            // 从最小化恢复：反向播一遍（0 → 1 淡入 + 0.92 → 1 放大），和最小化对称。
+            // 从任务栏恢复：整窗从略小一点的位置放大回原位（与最小化的收缩方向相反）。
             if (WindowState == WindowState.Normal && _pendingRestoreAnimation)
             {
                 _pendingRestoreAnimation = false;
 
-                if (SystemParameters.ClientAreaAnimation)
+                if (WindowAnimator.AnimationEnabled && !_animator.IsAnimating)
                 {
-                    RootFrame.Opacity = 0;
-                    RootScale.ScaleX = 0.92;
-                    RootScale.ScaleY = 0.92;
-
-                    AnimateRoot(toOpacity: 1, toScale: 1.0, milliseconds: 160,
-                        ease: new CubicEase { EasingMode = EasingMode.EaseOut },
-                        onCompleted: ResetRootVisuals);
+                    _animator.PlayRestoreFromTaskbar(_normalBounds, () =>
+                        _animator.ApplyBounds(_normalBounds));
                 }
+                else
+                {
+                    _animator.ApplyBounds(_normalBounds);
+                }
+            }
+            else if (WindowState == WindowState.Normal && !_animator.IsAnimating && _animator.CurrentBounds.Width > 0)
+            {
+                // 普通态的位置尺寸变化（拖动/改大小）随时记下来，还原时要回到这里。
+                _normalBounds = _animator.CurrentBounds;
             }
 
             var maximized = WindowState == WindowState.Maximized;
@@ -431,56 +447,77 @@ public partial class MainWindow : Window
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e)
     {
-        if (!SystemParameters.ClientAreaAnimation)
+        if (_closing)
+        {
+            return;
+        }
+
+        // 系统动画被用户关掉、或正在播动画：直接切状态，不播。
+        if (!WindowAnimator.AnimationEnabled || _animator.IsAnimating)
         {
             WindowState = WindowState.Minimized;
             return;
         }
 
-        // 先让内容缩小淡出，动画结束再真正最小化——自绘标题栏把系统动画顶掉了，
-        // 不补这一段用户看到的就是「啪」地一下没了。
-        AnimateRoot(toOpacity: 0, toScale: 0.92, milliseconds: 120,
-            ease: new CubicEase { EasingMode = EasingMode.EaseIn },
-            onCompleted: () =>
-            {
-                WindowState = WindowState.Minimized;
+        // 整窗向任务栏方向收缩 + 淡出，完成后再真正最小化。
+        var (screen, work) = GetMonitorBoundsDip();
 
-                // 复位放在最小化之后：此时窗口已不可见，跳变看不到；恢复时再从 0 反向播。
-                ResetRootVisuals();
-                _pendingRestoreAnimation = true;
-            });
+        _animator.PlayMinimize(_animator.CurrentBounds, screen, work, () =>
+        {
+            WindowState = WindowState.Minimized;
+
+            // 最小化后必须复位：否则从任务栏恢复出来是透明窗口，尺寸也可能停在收缩态。
+            _animator.ResetVisualState();
+            _animator.ApplyBounds(_normalBounds);
+            _pendingRestoreAnimation = true;
+        });
     }
 
     private void OnMaximizeClick(object sender, RoutedEventArgs e) => ToggleMaximize();
 
     private void ToggleMaximize()
     {
+        if (_closing)
+        {
+            return;
+        }
+
+        if (!WindowAnimator.AnimationEnabled || _animator.IsAnimating)
+        {
+            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            return;
+        }
+
+        var (_, work) = GetMonitorBoundsDip();
+
         if (WindowState == WindowState.Maximized)
         {
-            SystemCommands.RestoreWindow(this);
-        }
-        else
-        {
-            SystemCommands.MaximizeWindow(this);
-        }
+            // 还原：先把状态切回 Normal 并**立刻**把矩形按最大化矩形写死，避免系统先弹回普通尺寸再被我们拉走（会闪）。
+            var maximizedRect = _animator.CurrentBounds;
+            WindowState = WindowState.Normal;
+            _animator.ApplyBounds(maximizedRect);
 
-        if (!SystemParameters.ClientAreaAnimation)
-        {
+            _animator.PlayRestore(_normalBounds, () =>
+            {
+                _animator.ApplyBounds(_normalBounds);
+                WindowState = WindowState.Normal;
+            });
+
             return;
         }
 
-        // 尺寸变化由系统完成，这里只让内容「弹」到位，避免整块区域瞬间跳变。
-        // 160ms + 0.96 → 1.0：幅度小、时间短，够顺滑又不拖沓。
-        if (RootScale.ScaleX < 1)
+        // 记录普通态矩形，供还原时回到原位。
+        if (WindowState == WindowState.Normal)
         {
-            return;
+            _normalBounds = _animator.CurrentBounds;
         }
 
-        RootScale.ScaleX = 0.96;
-        RootScale.ScaleY = 0.96;
-        AnimateRoot(toOpacity: null, toScale: 1.0, milliseconds: 160,
-            ease: new CubicEase { EasingMode = EasingMode.EaseOut },
-            onCompleted: null);
+        // 最大化：从当前矩形平滑过渡到**当前所在显示器**的工作区（多屏必须按窗口所在屏算）。
+        _animator.PlayMaximize(work, () =>
+        {
+            _animator.ApplyBounds(work);
+            WindowState = WindowState.Maximized;
+        });
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e)
@@ -490,10 +527,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 「最小化到托盘」不是关闭，不播关闭动画——否则托盘路径会先淡出再消失，像闪了一下。
+        // 「最小化到托盘」不是关闭，不播关闭动画。
         var action = AppServices.Config?.Current.CloseAction ?? CloseAction.MinimizeToTray;
 
-        if (action == CloseAction.MinimizeToTray || !SystemParameters.ClientAreaAnimation)
+        if (action == CloseAction.MinimizeToTray || !WindowAnimator.AnimationEnabled)
         {
             Close();
             return;
@@ -501,81 +538,94 @@ public partial class MainWindow : Window
 
         _closing = true;
 
-        AnimateRoot(toOpacity: 0, toScale: 0.96, milliseconds: 150,
-            ease: new CubicEase { EasingMode = EasingMode.EaseOut },
-            onCompleted: () =>
+        _animator.PlayClose(() =>
+        {
+            try
             {
-                try
-                {
-                    Close();
-                }
-                finally
-                {
-                    // 关闭可能被 OnClosing 取消（比如退出前还有收尾），所以这里必须复位，
-                    // 否则下次打开会是一块透明的窗口。
-                    _closing = false;
-                    ResetRootVisuals();
-                }
-            });
+                Close();
+            }
+            finally
+            {
+                // 关闭可能被 OnClosing 取消，必须复位，否则下次打开是透明窗。
+                _animator.ResetVisualState();
+                _closing = false;
+            }
+        });
     }
 
     /// <summary>
-    /// 根内容的过渡动画。只动 Opacity 与 ScaleTransform，**不动 Width/Height**
-    /// （动尺寸会触发布局重排，几百个控件重算，肉眼可见地卡）。
+    /// 取窗口**当前所在显示器**的完整矩形与工作区，单位是 DIP。
+    /// <para>
+    /// 不能用 <c>SystemParameters.WorkArea</c>：那是主屏，多屏下最大化会贴错屏幕。
+    /// Win32 拿到的是物理像素，这里用窗口自己的 DPI 变换换算成 DIP，避免高分屏缩放下尺寸错乱。
+    /// </para>
     /// </summary>
-    /// <param name="toOpacity">目标不透明度；传 null 表示这次不动透明度。</param>
-    /// <param name="toScale">目标缩放比例。</param>
-    /// <param name="milliseconds">时长（毫秒）。</param>
-    /// <param name="ease">缓动曲线。</param>
-    /// <param name="onCompleted">动画结束回调；用 Completed 驱动后续动作，不靠计时器猜时间。</param>
-    private void AnimateRoot(double? toOpacity, double toScale, int milliseconds,
-        IEasingFunction ease, Action? onCompleted)
+    private (Rect Screen, Rect WorkArea) GetMonitorBoundsDip()
     {
-        var duration = new Duration(TimeSpan.FromMilliseconds(milliseconds));
-
-        if (toOpacity is { } opacity)
+        try
         {
-            var fade = new DoubleAnimation(opacity, duration)
+            var handle = new WindowInteropHelper(this).Handle;
+            var monitor = handle == IntPtr.Zero ? IntPtr.Zero : MonitorFromWindow(handle, MonitorDefaultToNearest);
+
+            if (monitor != IntPtr.Zero)
             {
-                EasingFunction = ease,
-                FillBehavior = FillBehavior.HoldEnd
-            };
+                var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
 
-            fade.Completed += (_, _) => onCompleted?.Invoke();
-            RootFrame.BeginAnimation(OpacityProperty, fade);
+                if (GetMonitorInfo(monitor, ref info))
+                {
+                    return (ToDip(info.Monitor), ToDip(info.Work));
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // 取不到就退到主屏工作区，动画仍然可用。
         }
 
-        var grow = new DoubleAnimation(toScale, duration)
-        {
-            EasingFunction = ease,
-            FillBehavior = FillBehavior.HoldEnd
-        };
-
-        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
-
-        // 不做淡入淡出的场景（最大化/还原）靠缩放动画的 Completed 触发回调。
-        if (toOpacity is null && onCompleted is not null)
-        {
-            grow.Completed += (_, _) => onCompleted();
-        }
+        var fallback = SystemParameters.WorkArea;
+        return (fallback, fallback);
     }
 
-    /// <summary>清掉动画并复位：HoldEnd 的动画会一直压着属性值，必须先 BeginAnimation(null) 再赋值。</summary>
-    private void ResetRootVisuals()
+    /// <summary>物理像素矩形 → DIP（按本窗口所在显示器的缩放）。</summary>
+    private Rect ToDip(NativeRect rect)
     {
-        RootFrame.BeginAnimation(OpacityProperty, null);
-        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
-        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice
+                        ?? Matrix.Identity;
 
-        RootFrame.Opacity = 1;
-        RootScale.ScaleX = 1;
-        RootScale.ScaleY = 1;
+        var topLeft = transform.Transform(new Point(rect.Left, rect.Top));
+        var bottomRight = transform.Transform(new Point(rect.Right, rect.Bottom));
+
+        return new Rect(topLeft, bottomRight);
     }
 
-    // ============================================================
-    // 导航
-    // ============================================================
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public int Flags;
+    }
+
+    private const uint MonitorDefaultToNearest = 2;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
 
     private void OnNavClick(object sender, RoutedEventArgs e)
     {

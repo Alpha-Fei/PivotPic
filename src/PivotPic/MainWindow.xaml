@@ -27,12 +27,7 @@
     <Border x:Name="RootFrame"
             Background="{DynamicResource Bg.Window}"
             CornerRadius="{DynamicResource Radius.Window}"
-            ClipToBounds="True"
-            RenderTransformOrigin="0.5,0.5">
-        <!-- 过渡动画只动这个缩放 + Opacity：动 Width/Height 会触发布局重排，肉眼可见地卡。 -->
-        <Border.RenderTransform>
-            <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
-        </Border.RenderTransform>
+            ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="48" />
