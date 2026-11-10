@@ -44,7 +44,11 @@ public static class BaselineJpegEncoder
     /// <param name="sourcePath">源文件（任意 JPEG）。</param>
     /// <param name="targetPath">输出路径（调用方负责临时文件与写回）。</param>
     /// <param name="error">失败原因。</param>
-    public static bool TryEncode(string sourcePath, string targetPath, out string error)
+    /// <param name="quality">
+    /// 质量档位；默认 95。仅用于出对照样本（A/B 试机），主流程不传。
+    /// 注意：霍夫曼表是标准表，长度与质量无关，改档位不会改变 DHT 段长。
+    /// </param>
+    public static bool TryEncode(string sourcePath, string targetPath, out string error, int quality = Quality)
     {
         error = string.Empty;
 
@@ -84,14 +88,14 @@ public static class BaselineJpegEncoder
                 cinfo.jpeg_set_colorspace(J_COLOR_SPACE.JCS_YCCK);
             }
 
-            cinfo.jpeg_set_quality(Quality, true);
+            cinfo.jpeg_set_quality(quality, true);
 
             // 第二张量化表（色度）：PS 输出带 2 张，只写 1 张会被 RIP 拒。
             // 单分量（灰度）没有色度分量，跳过。
             if (raw.Bands >= 3)
             {
                 cinfo.jpeg_add_quant_table(1, StandardChromaQuant,
-                    jpeg_compress_struct.jpeg_quality_scaling(Quality), true);
+                    jpeg_compress_struct.jpeg_quality_scaling(quality), true);
 
                 for (var i = 1; i < raw.Bands; i++)
                 {
