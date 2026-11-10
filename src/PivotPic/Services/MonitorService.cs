@@ -1506,12 +1506,39 @@ public sealed class MonitorService : IMonitorService, IDisposable
             }
 
             var probe = AppServices.Image?.Probe(item.FullPath);
-            return probe is not null && probe.OrientedWidth > probe.OrientedHeight;
+            if (probe is null)
+            {
+                return false;
+            }
+
+            // 横版：需要旋转，放行。
+            if (probe.OrientedWidth > probe.OrientedHeight)
+            {
+                return true;
+            }
+
+            // 竖版/正方形：不需要旋转，但若该目录开了「JPEG 兼容模式」且这是一张连续 JPEG，
+            // 仍要进队列做「转基线」——用户要的是「这张图能打印」，与横竖无关。
+            // 否则竖版图会在检测阶段被静默丢弃，转换代码根本没机会执行。
+            return item.Folder.ConvertProgressiveJpeg && NeedsBaselineConversion(item.FullPath);
         }
         catch (Exception)
         {
             return false;
         }
+    }
+
+    /// <summary>是否是一张「需要转基线」的 JPEG（连续/算术编码）。只读头部，毫秒级。</summary>
+    private static bool NeedsBaselineConversion(string fullPath)
+    {
+        var extension = Path.GetExtension(fullPath);
+        if (!string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return JpegProbe.Probe(fullPath).NeedsConversion;
     }
 
     /// <summary>
