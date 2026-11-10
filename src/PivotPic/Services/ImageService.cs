@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PivotPic.Models;
@@ -197,6 +198,46 @@ public sealed class ImageService : IImageService
         }
     }
 
+    /// <summary>
+    /// 写回文件，遇到占用/共享冲突时退避重试。
+    /// Photoshop 等程序打开图片时会长时间持锁，一次失败就放弃会让「明明能转却转不成」。
+    /// </summary>
+    private static bool TryWriteBackWithRetry(string tempPath, string targetPath, out string error)
+    {
+        error = string.Empty;
+        Exception? last = null;
+
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            try
+            {
+                File.Replace(tempPath, targetPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+                return true;
+            }
+            catch (Exception ex1)
+            {
+                last = ex1;
+
+                try
+                {
+                    File.Delete(targetPath);
+                    File.Move(tempPath, targetPath);
+                    return true;
+                }
+                catch (Exception ex2)
+                {
+                    last = ex2;
+                }
+            }
+
+            // 0.6s / 1.2s / 2.4s：够短不拖累批次，够长能覆盖"用户切回 PS 关掉文档"的手速。
+            Thread.Sleep(600 * (1 << attempt));
+        }
+
+        error = last?.Message ?? "未知原因";
+        return false;
+    }
+
     /// <summary>哪些结果之后还要做「转基线」：旋转成功，或本来就无需旋转（竖版/正方形）。</summary>
     private static bool AllowsBaselineConversion(RotationResult result)
     {
@@ -264,23 +305,15 @@ public sealed class ImageService : IImageService
                 return result.WithExtraMessage("连续 JPEG 转基线失败");
             }
 
-            try
+            // 写回前文件很可能正被别的程序占用（Photoshop 之类会持锁，哪怕是"只打开看看"）。
+            // 这类锁通常是暂时的，退避重试几次比一次失败就放弃更符合实际使用习惯。
+            if (!TryWriteBackWithRetry(tempPath, path, out var writeError))
             {
-                File.Replace(tempPath, path, destinationBackupFileName: null, ignoreMetadataErrors: true);
-            }
-            catch (Exception)
-            {
-                try
-                {
-                    File.Delete(path);
-                    File.Move(tempPath, path);
-                }
-                catch (Exception ex)
-                {
-                    TryDelete(tempPath);
-                    AppServices.Log?.Warn("处理", $"连续 JPEG 写回失败：{ex.Message}", directory, fileName);
-                    return result.WithExtraMessage("连续 JPEG 转基线失败：写回失败");
-                }
+                TryDelete(tempPath);
+                AppServices.Log?.Warn("处理",
+                    $"连续 JPEG 写回失败：{writeError}（若文件正在 Photoshop 等程序中打开，请先关闭再试）",
+                    directory, fileName);
+                return result.WithExtraMessage("连续 JPEG 转基线失败：文件被占用");
             }
 
             AppServices.Log?.Info("处理", "连续 JPEG 已转基线（Q95）", directory, fileName);
