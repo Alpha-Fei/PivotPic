@@ -108,8 +108,10 @@ public static class BaselineJpegEncoder
 
             }
 
-            // 优化霍夫曼表（按实际图像统计生成），而不是标准表。
-            cinfo.Optimize_coding = true;
+            // **不用** optimize：PS 那份 418 字节的 DHT 正好等于「标准表 2 组 DC+AC」的打包长度
+            // （29+179+29+179 = 416，加长度字段 2 = 418）。用 optimize 反而会得到 266 这种
+            // 跟 PS 对不上的长度。老 RIP 很可能按固定表长解析，所以这里必须用标准表。
+            cinfo.Optimize_coding = false;
 
             // 每 MCU 行一个重启点：DRI = ceil(宽/8)，PS 是 493（3937 宽）。
             cinfo.Restart_interval = (raw.Width + 7) / 8;
