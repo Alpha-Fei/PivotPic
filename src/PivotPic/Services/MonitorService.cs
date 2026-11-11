@@ -48,6 +48,12 @@ public sealed class MonitorService : IMonitorService, IDisposable
     private const int MergeCompactThreshold = 512;
 
     /// <summary>扫描时每处理多少个文件让出一次线程。</summary>
+    /// <summary>残留临时文件的判定阈值（分钟）。</summary>
+    private const int StaleTempMinutes = 10;
+
+    /// <summary>本程序自己的临时文件命名规则；只清这三类。</summary>
+    private static readonly string[] StaleTempPatterns = { "*.vtmp.*", "*.btmp.*", "*.idfix" };
+
     private const int YieldEvery = 50;
 
     /// <summary>扫描时每处理多少个文件上报一次进度。</summary>
@@ -452,6 +458,10 @@ public sealed class MonitorService : IMonitorService, IDisposable
                 return list;
             }, token).ConfigureAwait(false);
 
+            // 顺手清掉上一次失败/崩溃留下的临时文件：用户目录里出现过 .vtmp.jpg 残骸，
+            // 既占空间又会被自己扫到。只删「符合我们命名规则 + 超过 10 分钟」的，绝不动别的文件。
+            CleanupStaleTempFiles(files, resolvedPath);
+
             var total = files.Count;
             RaiseProgress(new ScanProgress
             {
@@ -593,6 +603,80 @@ public sealed class MonitorService : IMonitorService, IDisposable
     }
 
     /// <summary>判断文件是否属于需要处理的图片（扩展名白名单 + 排除临时文件）。</summary>
+    /// <summary>
+    /// 清理目录里由本程序遗留的临时文件（<c>*.vtmp.*</c> / <c>*.btmp.*</c> / <c>*.idfix</c>）。
+    /// <para>
+    /// 只删这三类命名、且最后写入时间超过 10 分钟的文件：正常的处理过程只会存活几秒，
+    /// 超过 10 分钟说明那次处理已经失败或进程被杀，文件不会再被用到。
+    /// **不做任何模糊匹配**——用户目录里什么文件都有，宁可漏删也不能误删。
+    /// </para>
+    /// </summary>
+    private static void CleanupStaleTempFiles(List<string> files, string rootDirectory)
+    {
+        try
+        {
+            var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { rootDirectory };
+
+            foreach (var file in files)
+            {
+                var directory = Path.GetDirectoryName(file);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    directories.Add(directory);
+                }
+            }
+
+            foreach (var directory in directories)
+            {
+                CleanupStaleTempFilesIn(directory);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppServices.Log?.Warn("扫描", $"清理残留临时文件失败：{ex.Message}", rootDirectory);
+        }
+    }
+
+    private static void CleanupStaleTempFilesIn(string directory)
+    {
+        var cutoff = DateTime.UtcNow.AddMinutes(-StaleTempMinutes);
+
+        foreach (var pattern in StaleTempPatterns)
+        {
+            IEnumerable<string> candidates;
+
+            try
+            {
+                candidates = Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            foreach (var file in candidates)
+            {
+                try
+                {
+                    var info = new FileInfo(file);
+                    if (!info.Exists || info.LastWriteTimeUtc > cutoff)
+                    {
+                        continue;
+                    }
+
+                    info.Delete();
+                    AppServices.Log?.Info("清理", "已删除上次遗留的临时文件",
+                        directory, Path.GetFileName(file));
+                }
+                catch (Exception ex)
+                {
+                    AppServices.Log?.Warn("清理", $"删除残留临时文件失败：{ex.Message}",
+                        directory, Path.GetFileName(file));
+                }
+            }
+        }
+    }
+
     private static bool IsSupportedImage(string fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath))

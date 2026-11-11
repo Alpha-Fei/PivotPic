@@ -681,32 +681,16 @@ public sealed class ImageService : IImageService
                 SaveFrame(retryEncoder, BitmapFrame.Create(rotated), tempPath);
             }
 
-            var downgraded = false;
-            try
+            // 与 libvips 路径同一套：SMB 上必须用 Win32 就地覆写，
+            // File.Replace / 删除+移动 在网络盘上会被共享冲突挡住。
+            if (!TryWriteBackWithRetry(tempPath, path, out var wpWriteError))
             {
-                // 原子替换：断电也不会出现半个文件。
-                File.Replace(tempPath, path, destinationBackupFileName: null, ignoreMetadataErrors: true);
-            }
-            catch (Exception)
-            {
-                // 跨卷 / 非 NTFS 时 Replace 不可用，降级为「删除 + 移动」。
-                try
-                {
-                    File.Delete(path);
-                    File.Move(tempPath, path);
-                    downgraded = true;
-                }
-                catch (Exception ex)
-                {
-                    TryDelete(tempPath);
-                    return Fail($"写回失败：{ex.Message}", stopwatch, probe);
-                }
+                TryDelete(tempPath);
+                return Fail($"写回失败：{wpWriteError}", stopwatch, probe);
             }
 
-            if (downgraded)
-            {
-                notes.Add("File.Replace 不可用，已降级为删除+移动写回");
-            }
+            // 就地覆写不消耗临时文件，必须清理。
+            TryDelete(tempPath);
 
             return new RotationResult
             {
@@ -905,24 +889,17 @@ public sealed class ImageService : IImageService
                 return outcome;
             }
 
-            try
+            // 写回必须走 Win32 就地覆写：SMB 上 File.Replace / File.Delete 在「文件被本进程读过」之后
+            // 必然返回共享冲突，网络盘上每一张需要旋转的图都会因此失败（v1.3.24 的真实事故）。
+            if (!TryWriteBackWithRetry(tempPath, path, out var vipsWriteError))
             {
-                File.Replace(tempPath, path, destinationBackupFileName: null, ignoreMetadataErrors: true);
+                TryDelete(tempPath);
+                AppServices.Log?.Warn("处理", $"libvips 写回失败：{vipsWriteError}", directory, Path.GetFileName(path));
+                return VipsNative.VipsRotateOutcome.WriteFailed;
             }
-            catch (Exception)
-            {
-                try
-                {
-                    File.Delete(path);
-                    File.Move(tempPath, path);
-                }
-                catch (Exception ex)
-                {
-                    TryDelete(tempPath);
-                    AppServices.Log?.Warn("处理", $"libvips 写回失败：{ex.Message}", directory, Path.GetFileName(path));
-                    return VipsNative.VipsRotateOutcome.WriteFailed;
-                }
-            }
+
+            // 就地覆写不会消耗临时文件，必须自己删，否则目录里会留下 .vtmp.jpg 残骸。
+            TryDelete(tempPath);
 
             result = new RotationResult
             {

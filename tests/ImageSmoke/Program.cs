@@ -113,6 +113,7 @@ internal static class Program
         Run("22", "超幅面跳过的连续 JPEG 也要转基线", () => Case22(image));
         Run("23", "转基线输出结构：SOF0 + DQT≥2 + RST>0 + DPI 保留", () => Case23Test(image));
         Run("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", () => Case24Test(image));
+        Run("25", "写回时目标被占用：退避重试后成功且不留临时文件", () => Case25Test(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -762,6 +763,58 @@ internal static class Program
         Check("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", ok,
             $"SOF=FF{s.Sof:X2} IDs=[{string.Join(",", s.Ids)}] DQT={s.QuantTables} RST={s.Restarts} " +
             $"transform={s.AdobeTransform} DHT段={s.DhtSegments}");
+    }
+
+    /// <summary>
+    /// 模拟「写回时目标文件正被别的程序占用」（用户事故的直接成因）：
+    /// 用 FileShare.Read 持有目标文件 → 本进程写不进去 → 写回必须退避重试；
+    /// 900ms 后释放，重试应当成功，且不能留下 .vtmp/.btmp 临时文件。
+    /// </summary>
+    private static void Case25Test(IImageService image)
+    {
+        var dir = Path.Combine(_root, "writeback");
+        Directory.CreateDirectory(dir);
+
+        var path = Path.Combine(dir, "locked_240x120.jpg");
+        MakeImage(path, 240, 120, PixelFormats.Bgr24, new JpegBitmapEncoder { QualityLevel = 90 });
+
+        // FileShare.Read：别人可以读，但写会被拒 → 等价于「文件被别的程序打开着」。
+        var holder = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var released = System.Threading.Tasks.Task.Run(() =>
+        {
+            System.Threading.Thread.Sleep(900);
+            holder.Dispose();
+        });
+
+        RotationResult result;
+        try
+        {
+            result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, DefaultMaxPixels);
+        }
+        finally
+        {
+            released.Wait();
+            holder.Dispose();
+        }
+
+        var probe = image.Probe(path);
+        var leftovers = 0;
+        foreach (var file in Directory.GetFiles(dir))
+        {
+            var name = Path.GetFileName(file);
+            if (name.Contains(".vtmp.", StringComparison.Ordinal) || name.Contains(".btmp.", StringComparison.Ordinal))
+            {
+                leftovers++;
+            }
+        }
+
+        var ok = result.Rotated
+                 && probe is { PixelWidth: 120, PixelHeight: 240 }
+                 && leftovers == 0;
+
+        Check("25", "写回时目标被占用：重试后成功且不留临时文件", ok,
+            $"Rotated={result.Rotated} 尺寸={probe?.PixelWidth}x{probe?.PixelHeight} " +
+            $"Message={result.Message} 残留={leftovers}");
     }
 
     // ---------- 基础设施 ----------
