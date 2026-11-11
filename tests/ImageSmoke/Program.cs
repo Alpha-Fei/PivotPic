@@ -111,6 +111,7 @@ internal static class Program
         Run("20", "竖版连续 JPEG：不旋转也必须转基线", () => Case20(image));
         Run("21", "已是基线的图：不重编码，字节不变", () => Case21(image));
         Run("22", "超幅面跳过的连续 JPEG 也要转基线", () => Case22(image));
+        Run("26", "幅面等于上限：四舍五入后不超就不该跳过", () => Case26(image));
         Run("23", "转基线输出结构：SOF0 + DQT≥2 + RST>0 + DPI 保留", () => Case23Test(image));
         Run("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", () => Case24Test(image));
         Run("25", "写回时目标被占用：退避重试后成功且不留临时文件", () => Case25Test(image));
@@ -530,6 +531,32 @@ internal static class Program
             $"前={JpegProbe.Describe(before.Kind)} 后={JpegProbe.Describe(after.Kind)} " +
             $"Rotated={result.Rotated} Converted={result.Converted} Action={result.Action} " +
             $"尺寸={after.Width}x{after.Height}");
+    }
+
+    /// <summary>
+    /// 边界 bug：界面上限显示为 1 位小数（如 150.0），判定却用未取整的原始厘米值。
+    /// 于是 150.02 cm 显示成「150」却按「超过」跳过 —— 用户体验就是「等于上限也不旋转」。
+    /// 判据：显示精度下没有超过，就必须允许旋转。
+    /// </summary>
+    private static void Case26(IImageService image)
+    {
+        if (!VipsNative.IsAvailable)
+        {
+            Check("26", "幅面等于上限不跳过", true, "跳过：本机 libvips 不可用");
+            return;
+        }
+
+        var path = Path.Combine(_root, "size_boundary_24x32.jpg");
+        File.WriteAllBytes(path, Convert.FromBase64String(PortraitProgressiveJpegBase64));
+
+        // 24×32 @300dpi ≈ 0.203×0.271 cm；上限设 0.2 —— 原始值略超，但按 1 位小数显示就是 0.2（等于上限）。
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise,
+            DefaultMaxPixels, null, 0.2, convertProgressiveJpeg: false);
+
+        var ok = result.Action != "SkippedTooBigCm";
+
+        Check("26", "幅面等于上限：四舍五入后不超就不该跳过", ok,
+            $"上限=0.2cm 实际≈0.203×0.271cm Action={result.Action}");
     }
 
     /// <summary>

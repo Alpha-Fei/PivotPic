@@ -145,7 +145,12 @@ public sealed class ImageService : IImageService
         }
 
         // 成品幅面检查：按像素与 DPI 换算成厘米，宽高“都”超过上限才跳过（0 表示未启用）。
-        if (maxSideCm > 0 && probe.WidthCm > maxSideCm && probe.HeightCm > maxSideCm)
+        // 边界容差：界面按 1 位小数显示（150.0），判定也用同一精度。
+        // 否则 150.02 会显示成「150」却按「超过上限」跳过，用户看到的就是「等于 150 也不旋转」。
+        const double cmTolerance = 0.05;
+        if (maxSideCm > 0
+            && probe.WidthCm > maxSideCm + cmTolerance
+            && probe.HeightCm > maxSideCm + cmTolerance)
         {
             return FinishWithoutRotation("SkippedTooBigCm",
                 $"成品 {probe.WidthCm:0.#}×{probe.HeightCm:0.#} cm 两边均超过上限 {maxSideCm:0.#} cm");
