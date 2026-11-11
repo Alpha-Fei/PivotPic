@@ -30,6 +30,9 @@ internal static class VipsNative
     private static VipsGetInt? _getBands;
     private static VipsWriteToMemory? _writeToMemory;
     private static GFree? _gFree;
+    private static VipsCacheSetInt? _cacheSetMax;
+    private static VipsCacheSetInt? _cacheSetMaxMem;
+    private static VipsCacheSetInt? _cacheSetMaxFiles;
     private static GObjectUnref? _unref;
     private static VipsErrorBuffer? _errorBuffer;
 
@@ -56,6 +59,9 @@ internal static class VipsNative
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void GFree(IntPtr pointer);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int VipsCacheSetInt(int value);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void GObjectUnref(IntPtr obj);
@@ -141,6 +147,12 @@ internal static class VipsNative
                     return;
                 }
 
+                // libvips 默认有操作缓存（最多 1000 个操作 / 100 MB / 100 个文件）。
+                // 缓存的图像会一直持有源文件句柄，而 libvips 打开文件时**不带 FILE_SHARE_DELETE**，
+                // 于是「处理过的文件」在资源管理器里改不了名、删不掉，弹「文件已在…中打开」。
+                // 我们每张图只加载一次，缓存没有任何收益，直接全部关掉。
+                BindCacheControls(handle);
+
                 _available = true;
             }
             catch (Exception ex)
@@ -205,6 +217,38 @@ internal static class VipsNative
 
         /// <summary>写回失败（可回退）。</summary>
         WriteFailed
+    }
+
+    /// <summary>关闭 libvips 操作缓存（老版本可能缺某个导出，缺了就尽力而为）。</summary>
+    private static void BindCacheControls(IntPtr handle)
+    {
+        try
+        {
+            _cacheSetMax = GetExport<VipsCacheSetInt>(handle, "vips_cache_set_max");
+            _cacheSetMaxMem = GetExport<VipsCacheSetInt>(handle, "vips_cache_set_max_mem");
+            _cacheSetMaxFiles = GetExport<VipsCacheSetInt>(handle, "vips_cache_set_max_files");
+        }
+        catch (Exception)
+        {
+            _cacheSetMax = null;
+            _cacheSetMaxMem = null;
+            _cacheSetMaxFiles = null;
+        }
+
+        try
+        {
+            _cacheSetMax?.Invoke(0);
+            _cacheSetMaxMem?.Invoke(0);
+            _cacheSetMaxFiles?.Invoke(0);
+
+            // 注意：**不要**在这里或处理流程里调 vips_cache_drop_all()。
+            // 该导出在本构建上会触发 AccessViolation（实测：批量旋转第三张就崩），
+            // 而 max=0 之后本来就不会再缓存，drop_all 没有额外收益。
+        }
+        catch (Exception)
+        {
+            // 缓存关不掉也不影响正确性，只是句柄晚一点释放。
+        }
     }
 
     /// <summary>从 libvips 读出来的原始像素（行优先、通道交错）。</summary>
