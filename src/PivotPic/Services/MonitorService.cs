@@ -297,23 +297,35 @@ public sealed class MonitorService : IMonitorService, IDisposable
         // 重复启动同一目录时先卸载旧实例，保证一个 Id 只对应一个 watcher。
         StopFolderCore(folder.Id, cancelPending: resetRetry);
 
-        var resolvedPath = ResolveFolderPath(folder.Path);
-        if (string.IsNullOrWhiteSpace(resolvedPath))
+        // 通配模板会匹配到多个真实目录，这里全部挂上（每目录一个 watcher）。
+        var matchedPaths = ResolveFolderPaths(folder.Path);
+        if (matchedPaths.Count == 0)
         {
             RaiseFolderState(folder.Id, "unavailable");
             return MountOutcome.Failed;
         }
 
-        // 只做检测，绝不替用户创建目录——路径写错时创建空文件夹会掩盖问题。
-        if (!Directory.Exists(resolvedPath))
+        var existingPaths = matchedPaths.FindAll(Directory.Exists);
+
+        if (existingPaths.Count == 0)
         {
             // 开机自启时映射的网络盘往往还没挂好。这里若直接 return，等盘符上线后
             // 没有任何人会回来重试，整个会话都不会处理任何图片——用户反馈的
             // "自启后不自动扫描"正是这条路径，因此必须登记一次延迟重试。
             RaiseFolderState(folder.Id, "missing");
-            SchedulePendingMount(folder, resolvedPath);
+            SchedulePendingMount(folder, matchedPaths[0]);
             return MountOutcome.RetryScheduled;
         }
+
+        // 通配匹配到的目录数要能看见，否则用户不知道到底在监控哪几个日期目录。
+        if (IsWildcardTemplate(folder.Path))
+        {
+            AppServices.Log?.Info("监控",
+                $"通配匹配 {existingPaths.Count} 个目录：{string.Join("、", existingPaths)}",
+                existingPaths[0]);
+        }
+
+        var resolvedPath = existingPaths[0];
 
         // 提到 try 外面：异常发生在 Attach 内部时 runtime 已持有未启用的 watcher，
         // catch 里必须能拿到它做清理，否则会留下半挂实例。
@@ -322,22 +334,29 @@ public sealed class MonitorService : IMonitorService, IDisposable
         try
         {
             // created 同时供事件回调捕获（非空局部变量），runtime 供 catch 清理。
-            var created = new FolderRuntime(folder, resolvedPath);
+            var created = new FolderRuntime(folder, resolvedPath, existingPaths);
             runtime = created;
 
-            var watcher = new FileSystemWatcher(resolvedPath)
+            var watchers = new List<FileSystemWatcher>(existingPaths.Count);
+
+            foreach (var path in existingPaths)
             {
-                IncludeSubdirectories = folder.IncludeSubdirectories,
-                InternalBufferSize = 64 * 1024,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size
-            };
+                var watcher = new FileSystemWatcher(path)
+                {
+                    IncludeSubdirectories = folder.IncludeSubdirectories,
+                    InternalBufferSize = 64 * 1024,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size
+                };
 
-            watcher.Created += (_, e) => OnFileEvent(created, e.FullPath);
-            watcher.Changed += (_, e) => OnFileEvent(created, e.FullPath);
-            watcher.Renamed += (_, e) => OnFileEvent(created, e.FullPath);
-            watcher.Error += (_, e) => OnWatcherError(created, e);
+                watcher.Created += (_, e) => OnFileEvent(created, e.FullPath);
+                watcher.Changed += (_, e) => OnFileEvent(created, e.FullPath);
+                watcher.Renamed += (_, e) => OnFileEvent(created, e.FullPath);
+                watcher.Error += (_, e) => OnWatcherError(created, e);
 
-            created.Attach(watcher);
+                watchers.Add(watcher);
+            }
+
+            created.AttachAll(watchers);
             _runtimes[folder.Id] = created;
             _running = true;
             RaiseFolderState(folder.Id, "watching");
@@ -420,10 +439,24 @@ public sealed class MonitorService : IMonitorService, IDisposable
             return;
         }
 
-        var resolvedPath = ResolveFolderPath(folder.Path);
-        if (string.IsNullOrWhiteSpace(resolvedPath) || !Directory.Exists(resolvedPath))
+        // 通配模板可能匹配多个日期目录，这里逐个扫。
+        var matchedPaths = ResolveFolderPaths(folder.Path);
+        var scanPaths = matchedPaths.FindAll(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p));
+
+        if (scanPaths.Count == 0)
         {
-            AppServices.Log?.Warn("扫描", "目录不存在，扫描取消", resolvedPath);
+            if (IsWildcardTemplate(folder.Path))
+            {
+                // 通配匹配 0 个不是错误（比如今天还没有建日期目录），记信息级日志即可，避免刷屏。
+                AppServices.Log?.Info("扫描", $"通配未匹配到任何目录，本次跳过：{folder.Path}",
+                    matchedPaths.Count > 0 ? matchedPaths[0] : folder.Path);
+            }
+            else
+            {
+                AppServices.Log?.Warn("扫描", "目录不存在，扫描取消",
+                    matchedPaths.Count > 0 ? matchedPaths[0] : folder.Path);
+            }
+
             RaiseProgress(new ScanProgress
             {
                 FolderId = folder.Id,
@@ -433,6 +466,14 @@ public sealed class MonitorService : IMonitorService, IDisposable
                 Completed = true
             });
             return;
+        }
+
+        var resolvedPath = scanPaths[0];
+
+        if (IsWildcardTemplate(folder.Path))
+        {
+            AppServices.Log?.Info("扫描",
+                $"通配匹配 {scanPaths.Count} 个目录：{string.Join("、", scanPaths)}", resolvedPath);
         }
 
         using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -454,7 +495,24 @@ public sealed class MonitorService : IMonitorService, IDisposable
             var files = await Task.Run(() =>
             {
                 var list = new List<string>();
-                CollectFiles(resolvedPath, folder.IncludeSubdirectories, list, token, ignored);
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var path in scanPaths)
+                {
+                    var batch = new List<string>();
+                    CollectFiles(path, folder.IncludeSubdirectories, batch, token, ignored);
+
+                    // 去重：同一个真实目录可能被多个模板/多层通配重复命中，
+                    // 不去重的话同一张图会被处理两次。
+                    foreach (var file in batch)
+                    {
+                        if (seen.Add(file))
+                        {
+                            list.Add(file);
+                        }
+                    }
+                }
+
                 return list;
             }, token).ConfigureAwait(false);
 
@@ -588,17 +646,44 @@ public sealed class MonitorService : IMonitorService, IDisposable
         _shutdown.Dispose();
     }
 
-    /// <summary>解析目录路径模板。</summary>
-    private static string ResolveFolderPath(string template)
+    /// <summary>
+    /// 解析目录路径模板，返回**所有**匹配的真实目录。
+    /// <para>
+    /// 无通配（不含有效的 <c>%...%</c>）时返回单元素，行为与旧的单路径版本一致；
+    /// 含通配时按目录层级展开，返回所有实际存在的目录（最多 500 个）。
+    /// </para>
+    /// </summary>
+    private static List<string> ResolveFolderPaths(string template)
     {
         try
         {
-            return AppServices.PathTemplate?.Resolve(template) ?? template ?? string.Empty;
+            var service = AppServices.PathTemplate;
+
+            if (service is null)
+            {
+                return new List<string> { template ?? string.Empty };
+            }
+
+            var paths = service.ResolveMany(template);
+            return paths.Count == 0 ? new List<string>() : new List<string>(paths);
         }
         catch (Exception)
         {
             // 模板里有非法字符时退回原文，后续 Directory 操作会给出具体错误。
-            return template ?? string.Empty;
+            return new List<string> { template ?? string.Empty };
+        }
+    }
+
+    /// <summary>模板里是否含通配段（用于决定日志文案）。</summary>
+    private static bool IsWildcardTemplate(string template)
+    {
+        try
+        {
+            return AppServices.PathTemplate?.HasWildcard(template) == true;
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 
@@ -2014,30 +2099,50 @@ public sealed class MonitorService : IMonitorService, IDisposable
     private sealed class FolderRuntime : IDisposable
     {
         private readonly object _gate = new();
-        private FileSystemWatcher? _watcher;
+        private readonly List<FileSystemWatcher> _watchers = new();
         private System.Threading.Timer? _retryTimer;
         private bool _disposed;
 
-        public FolderRuntime(WatchedFolder folder, string resolvedPath)
+        public FolderRuntime(WatchedFolder folder, string resolvedPath) : this(folder, resolvedPath, new[] { resolvedPath })
+        {
+        }
+
+        public FolderRuntime(WatchedFolder folder, string resolvedPath, IReadOnlyList<string> resolvedPaths)
         {
             Folder = folder;
             ResolvedPath = resolvedPath;
+            ResolvedPaths = resolvedPaths;
         }
 
         /// <summary>目录配置快照。</summary>
         public WatchedFolder Folder { get; }
 
-        /// <summary>占位符展开后的真实路径。</summary>
+        /// <summary>占位符展开后的第一个真实路径（兼容旧调用）。</summary>
         public string ResolvedPath { get; }
 
-        /// <summary>挂上并启用 watcher。</summary>
-        public void Attach(FileSystemWatcher watcher)
+        /// <summary>本次实际监控的所有真实目录（通配模板会多于一个）。</summary>
+        public IReadOnlyList<string> ResolvedPaths { get; }
+
+        /// <summary>挂上并启用 watcher（通配模板会匹配到多个目录，所以这里是复数）。</summary>
+        public void AttachAll(IEnumerable<FileSystemWatcher> watchers)
         {
             lock (_gate)
             {
                 DisposeWatcherLocked();
-                _watcher = watcher;
-                watcher.EnableRaisingEvents = true;
+
+                foreach (var watcher in watchers)
+                {
+                    _watchers.Add(watcher);
+
+                    try
+                    {
+                        watcher.EnableRaisingEvents = true;
+                    }
+                    catch (Exception)
+                    {
+                        // 单个目录挂不上不影响其它目录继续监控。
+                    }
+                }
             }
         }
 
@@ -2078,30 +2183,29 @@ public sealed class MonitorService : IMonitorService, IDisposable
         /// <summary>卸载 watcher（调用方必须已持有 _gate）。</summary>
         private void DisposeWatcherLocked()
         {
-            if (_watcher is null)
+            foreach (var watcher in _watchers)
             {
-                return;
+                try
+                {
+                    watcher.EnableRaisingEvents = false;
+                }
+                catch (Exception)
+                {
+                    // 目录可能已卸载，忽略。
+                }
+
+                try
+                {
+                    watcher.Dispose();
+                }
+                catch (Exception)
+                {
+                    // 同上。
+                }
             }
 
-            try
-            {
-                _watcher.EnableRaisingEvents = false;
-            }
-            catch (Exception)
-            {
-                // watcher 已失效时关闭事件可能抛异常，忽略。
-            }
-
-            try
-            {
-                _watcher.Dispose();
-            }
-            catch (Exception)
-            {
-                // 释放失败无需上报。
-            }
-
-            _watcher = null;
+            _watchers.Clear();
         }
+
     }
 }

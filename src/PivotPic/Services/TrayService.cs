@@ -61,6 +61,39 @@ public sealed class TrayService : ITrayService
         _updateItem.Visible = true;
     }
 
+    /// <inheritdoc />
+    public void ShowInstallReady(string versionText)
+    {
+        if (_disposed || _updateItem is null)
+        {
+            return;
+        }
+
+        _updateItem.Text = string.IsNullOrWhiteSpace(versionText)
+            ? "安装新版本"
+            : $"安装新版本 {versionText}";
+
+        _updateItem.Visible = true;
+    }
+
+    /// <inheritdoc />
+    public void ShowBalloon(string title, string message)
+    {
+        if (_disposed || _notifyIcon is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _notifyIcon.ShowBalloonTip(4000, title, message, WinForms.ToolTipIcon.Info);
+        }
+        catch (Exception)
+        {
+            // 系统关闭了通知时可能失败，忽略即可。
+        }
+    }
+
     /// <summary>
     /// 左键单击托盘图标 = 打开/还原主窗口。
     /// <para>

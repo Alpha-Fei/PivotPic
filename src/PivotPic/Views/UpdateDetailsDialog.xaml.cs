@@ -1,5 +1,8 @@
 using System;
 using System.Threading;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -22,6 +25,12 @@ public partial class UpdateDetailsDialog : Window
     /// <summary>更新说明的最大展示长度。超长说明截断，避免弹窗高度失控。</summary>
     private const int MaxBodyLength = 4000;
 
+    /// <summary>首屏展示的说明行数，超出部分折叠。</summary>
+    private const int BodyPreviewLines = 6;
+
+    /// <summary>清洗后的完整说明（展开时用）。</summary>
+    private string _bodyFull = string.Empty;
+
     /// <summary>对话框自身的阶段状态机。</summary>
     private enum Stage
     {
@@ -41,7 +50,6 @@ public partial class UpdateDetailsDialog : Window
     private readonly ReleaseInfo _release;
     private readonly IUpdateCoordinator _coordinator;
 
-    private CancellationTokenSource? _cts;
     private Stage _stage = Stage.Ready;
     private bool _skipRequested;
     private bool _closingForReal;
@@ -58,6 +66,12 @@ public partial class UpdateDetailsDialog : Window
 
         FillStaticInfo();
         ApplyStage(Stage.Ready);
+
+        // 之前已经下完（甚至窗口关了让它继续下）→ 直接显示「已就绪」，不要重下。
+        if (coordinator.HasDownloadedPackage)
+        {
+            ApplyStage(Stage.Launching);
+        }
 
         Loaded += OnDialogLoaded;
         Closing += OnDialogClosing;
@@ -90,10 +104,13 @@ public partial class UpdateDetailsDialog : Window
             _ => AppServices.Proxy?.Current.IsRunning == true ? "内置加速" : "直连"
         };
 
-        BodyText.Text = BuildBodyText(_release.Body);
+        ApplyBodyText(BuildBodyText(_release.Body));
     }
 
-    /// <summary>把 Markdown 原文降级成纯文本：保留换行，去掉标题井号与图片语法。</summary>
+    /// <summary>
+    /// 把 Markdown 原文降级成**纯文本**：`##`、`**`、`-`、反引号、链接语法全部去掉，
+    /// 只留下人能直接读的句子。用户看的是「这次改了什么」，不是排版源码。
+    /// </summary>
     private static string BuildBodyText(string body)
     {
         var text = (body ?? string.Empty).Replace("\r\n", "\n").Trim();
@@ -103,25 +120,83 @@ public partial class UpdateDetailsDialog : Window
             return "本次更新没有提供说明。";
         }
 
-        // 只做最小清洗：用户看的是「改了什么」，不是排版。
         var lines = text.Split('\n');
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
+        var cleaned = new List<string>(lines.Length);
 
-            while (line.StartsWith('#'))
+        foreach (var raw in lines)
+        {
+            var line = raw.Trim();
+
+            // 图片语法整行丢弃（弹窗里也没法显示图）。
+            if (line.StartsWith("![", StringComparison.Ordinal))
             {
-                line = line[1..];
+                continue;
             }
 
-            lines[i] = line.TrimStart();
+            // 标题：去掉前导 # 之后当普通段落。
+            line = line.TrimStart('#', ' ').Trim();
+
+            // 列表符号统一成「· 」。
+            if (line.StartsWith("- ", StringComparison.Ordinal) || line.StartsWith("* ", StringComparison.Ordinal))
+            {
+                line = "· " + line[2..].Trim();
+            }
+
+            // 引用块。
+            if (line.StartsWith("> ", StringComparison.Ordinal))
+            {
+                line = line[2..].Trim();
+            }
+
+            // 链接 [文字](地址) → 文字；裸 URL 保留（用户可能要手动打开）。
+            line = Regex.Replace(line, @"\[([^\]]*)\]\([^)]*\)", "$1");
+
+            // 行内代码 / 粗体 / 斜体标记。
+            line = line.Replace("**", string.Empty)
+                       .Replace("__", string.Empty)
+                       .Replace("`", string.Empty);
+
+            // 水平分割线没有信息量，跳过。
+            if (line is "---" or "***" or "___")
+            {
+                continue;
+            }
+
+            cleaned.Add(line);
         }
 
-        var cleaned = string.Join('\n', lines).Trim();
+        var result = string.Join('\n', cleaned).Trim();
 
-        return cleaned.Length > MaxBodyLength
-            ? cleaned[..MaxBodyLength] + "\n\n…（说明过长已截断，可在浏览器打开发布页查看完整内容）"
-            : cleaned;
+        // 收敛连续空行，避免弹窗里出现大片空白。
+        result = Regex.Replace(result, @"\n{3,}", "\n\n");
+
+        return result.Length > MaxBodyLength
+            ? result[..MaxBodyLength] + "\n\n…（说明过长已截断，可在浏览器打开发布页查看完整内容）"
+            : result;
+    }
+
+    /// <summary>首屏只显示 6 行，剩下的点「查看完整说明」展开。</summary>
+    private void ApplyBodyText(string full)
+    {
+        _bodyFull = full;
+
+        var lines = full.Split('\n');
+        if (lines.Length <= BodyPreviewLines)
+        {
+            BodyText.Text = full;
+            BodyMoreButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        BodyText.Text = string.Join('\n', lines.Take(BodyPreviewLines)) + "\n…";
+        BodyMoreButton.Visibility = Visibility.Visible;
+    }
+
+    private void OnBodyMoreClick(object sender, RoutedEventArgs e)
+    {
+        BodyText.Text = _bodyFull;
+        BodyMoreButton.Visibility = Visibility.Collapsed;
+        BodyScroll.MaxHeight = 360;
     }
 
     /// <summary>弹出动画：0.94 → 1 缩放 + 淡入，与「添加监控目录」保持同一节奏。</summary>
@@ -227,21 +302,28 @@ public partial class UpdateDetailsDialog : Window
         }
     }
 
-    /// <summary>下载 → 校验 → 拉起安装程序。失败分成「可取消」和「真失败」两类处理。</summary>
+    /// <summary>
+    /// 启动下载。**下载归协调器所有**：窗口关掉、按 Esc、点「稍后」都不会中断它。
+    /// 这里只是「视图」，负责把进度画出来、下完了拉起安装程序。
+    /// </summary>
     private async Task StartDownloadAsync()
     {
-        // 重试前把上一次残留的取消源清掉，避免复用已取消的 token。
-        _cts?.Dispose();
-        _cts = new CancellationTokenSource();
-
         ApplyStage(Stage.Downloading);
 
         var progress = new Progress<UpdateProgress>(OnProgress);
 
         try
         {
-            await _coordinator.DownloadAndLaunchAsync(_release, progress, _cts.Token);
+            await _coordinator.StartBackgroundDownload(_release, progress);
+
+            if (_closingForReal)
+            {
+                // 窗口已经关了：只把状态准备好，安装由托盘入口负责，绝不弹窗打扰。
+                return;
+            }
+
             ApplyStage(Stage.Launching);
+            _coordinator.LaunchDownloadedPackage();
         }
         catch (OperationCanceledException)
         {
@@ -262,8 +344,7 @@ public partial class UpdateDetailsDialog : Window
         }
         finally
         {
-            _cts?.Dispose();
-            _cts = null;
+            // 下载的取消源归协调器，这里不持有任何资源。
         }
     }
 
@@ -283,17 +364,10 @@ public partial class UpdateDetailsDialog : Window
         ErrorText.Text = message;
     }
 
+    /// <summary>只有用户**显式点「取消下载」**时才会走到这里。</summary>
     private void CancelDownload()
     {
-        try
-        {
-            _cts?.Cancel();
-        }
-        catch (Exception)
-        {
-            // 取消失败也要让界面回到可操作状态。
-        }
-
+        _coordinator.CancelBackgroundDownload();
         ApplyStage(Stage.Ready);
     }
 
@@ -318,10 +392,8 @@ public partial class UpdateDetailsDialog : Window
     /// </summary>
     private void FinishWithLater()
     {
-        if (_stage == Stage.Downloading)
-        {
-            CancelDownload();
-        }
+        // 注意：**不再取消下载**。下载的生命期归协调器，关掉窗口只是关掉「视图」，
+        // 后台会继续下完，完成后由托盘提示。
 
         if (_stage == Stage.Launching)
         {

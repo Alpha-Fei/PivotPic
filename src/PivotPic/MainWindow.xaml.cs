@@ -115,6 +115,21 @@ public partial class MainWindow : Window
         coordinator.UpdateFound += OnUpdateFound;
         coordinator.StateChanged += (_, _) => RefreshUpdateBanner();
 
+        // 后台下载完成：窗口关着就用托盘提示，绝不弹模态窗。
+        coordinator.DownloadCompleted += (_, _) =>
+        {
+            var release = coordinator.AvailableUpdate;
+
+            if (!_updateDialogOpen)
+            {
+                AppServices.Tray?.ShowInstallReady(release?.TagName ?? string.Empty);
+                AppServices.Tray?.ShowBalloon("新版本已下载完成",
+                    "点托盘菜单里的「安装新版本」即可完成升级");
+            }
+
+            RefreshUpdateBanner();
+        };
+
         RefreshUpdateBanner();
     }
 
@@ -199,6 +214,15 @@ public partial class MainWindow : Window
     /// </summary>
     public void OpenUpdateEntry()
     {
+        var coordinator = AppServices.UpdateCoordinator;
+
+        // 已经下载完成 → 直接装，不再走「打开窗口 → 再点一次」的弯路。
+        if (coordinator?.HasDownloadedPackage == true)
+        {
+            coordinator.LaunchDownloadedPackage();
+            return;
+        }
+
         if (AppServices.UpdateCoordinator?.AvailableUpdate is { } release)
         {
             OpenUpdateDialog(release);

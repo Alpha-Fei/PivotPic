@@ -57,6 +57,9 @@ public sealed class FolderItemViewModel : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>底层配置对象。</summary>
+    private int _wildcardMatchCount;
+    private bool _isWildcardTemplate;
+
     public WatchedFolder Model { get; }
 
     /// <summary>目录 Id，用于和扫描进度事件对齐。</summary>
@@ -83,6 +86,26 @@ public sealed class FolderItemViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>通配模板本次匹配到的目录数；0 表示没匹配到（或不是通配模板）。</summary>
+    public int WildcardMatchCount
+    {
+        get => _wildcardMatchCount;
+        private set
+        {
+            if (_wildcardMatchCount == value)
+            {
+                return;
+            }
+
+            _wildcardMatchCount = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ResolvedLine));
+        }
+    }
+
+    /// <summary>是否是通配模板（含有效的 %...%）。</summary>
+    public bool IsWildcardTemplate => _isWildcardTemplate;
+
     /// <summary>模板中无法识别的占位符（含花括号原文）。</summary>
     public IReadOnlyList<string> UnknownTokens
     {
@@ -103,10 +126,18 @@ public sealed class FolderItemViewModel : INotifyPropertyChanged
     /// <summary>未识别占位符的拼接文本。</summary>
     public string UnknownTokenText => string.Join("、", _unknownTokens);
 
-    /// <summary>卡片第二行文字：实际路径 + 可选的未识别占位符提示。</summary>
-    public string ResolvedLine => HasUnknownTokens
-        ? $"实际路径：{ResolvedPath} · 未识别占位符：{UnknownTokenText}"
-        : $"实际路径：{ResolvedPath}";
+    /// <summary>卡片第二行文字：实际路径 + 通配匹配数 + 可选的未识别占位符提示。</summary>
+    public string ResolvedLine
+    {
+        get
+        {
+            var line = IsWildcardTemplate
+                ? $"实际路径：{ResolvedPath} · 通配：匹配 {WildcardMatchCount} 个日期文件夹"
+                : $"实际路径：{ResolvedPath}";
+
+            return HasUnknownTokens ? $"{line} · 未识别占位符：{UnknownTokenText}" : line;
+        }
+    }
 
     /// <summary>路径文本的悬停提示，展示完整解析结果。</summary>
     public string PathTooltip => string.IsNullOrEmpty(ResolvedPath) ? DisplayPath : ResolvedPath;
@@ -774,14 +805,30 @@ public sealed class FolderItemViewModel : INotifyPropertyChanged
 
         try
         {
-            ResolvedPath = AppServices.PathTemplate?.Resolve(template) ?? template;
-            UnknownTokens = AppServices.PathTemplate?.FindUnknownPlaceholders(template)
-                            ?? Array.Empty<string>();
+            var service = AppServices.PathTemplate;
+            _isWildcardTemplate = service?.HasWildcard(template) == true;
+
+            if (_isWildcardTemplate)
+            {
+                // 通配模板：展示第一个匹配目录，并把匹配数量显示出来，
+                // 否则用户看不出到底监控了几个日期文件夹。
+                var matches = service!.ResolveMany(template);
+                WildcardMatchCount = matches.Count;
+                ResolvedPath = matches.Count > 0 ? matches[0] : service.Resolve(template);
+            }
+            else
+            {
+                WildcardMatchCount = 0;
+                ResolvedPath = service?.Resolve(template) ?? template;
+            }
+
+            UnknownTokens = service?.FindUnknownPlaceholders(template) ?? Array.Empty<string>();
         }
         catch (Exception)
         {
             // 模板里出现非法字符时 Resolve 可能抛异常，界面退回原文即可，不允许影响页面渲染。
             ResolvedPath = template;
+            WildcardMatchCount = 0;
             UnknownTokens = Array.Empty<string>();
         }
     }

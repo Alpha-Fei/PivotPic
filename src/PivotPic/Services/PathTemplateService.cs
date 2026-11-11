@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -32,10 +33,44 @@ public sealed class PathTemplateService : IPathTemplateService
         "yyyy", "yy", "mm", "dd", "hh", "mi", "ss", "m", "d", "h"
     };
 
+    /// <summary>单次通配展开允许枚举的最大目录数，防止 <c>%yyyy%\\%mm-dd%</c> 之类把磁盘扫穿。</summary>
+    private const int MaxWildcardMatches = 500;
+
+    /// <summary>任意一对百分号，捕获内部串（不允许嵌套）。</summary>
+    private static readonly Regex EnvironmentTokenRegex = new(
+        @"%([^%]+)%",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>任意一对百分号，捕获内部串（不允许嵌套）。</summary>
+    private static readonly Regex WildcardRegex = new(
+        @"%([^%]*)%",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     /// <summary>任意一对花括号，捕获内部串（不允许嵌套花括号）。</summary>
     private static readonly Regex BraceRegex = new(
         @"\{([^{}]*)\}",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// 只展开**系统里真实存在**的环境变量。
+    /// <para>
+    /// 不能用 <see cref="Environment.ExpandEnvironmentVariables"/>：它遇到 <c>%mm-dd%</c>
+    /// 这种「长得像环境变量」的日期通配会当成未知变量处理掉，通配就永远匹配不到。
+    /// </para>
+    /// </summary>
+    private static string ExpandKnownEnvironmentVariables(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.Contains('%'))
+        {
+            return text;
+        }
+
+        return EnvironmentTokenRegex.Replace(text, match =>
+        {
+            var value = Environment.GetEnvironmentVariable(match.Groups[1].Value);
+            return value ?? match.Value;
+        });
+    }
 
     /// <summary>展开模板：先展开环境变量，再按「花括号内分词」规则替换时间占位符。</summary>
     /// <param name="template">路径模板，例如 "%USERPROFILE%\Pictures\{mm-dd}"。</param>
@@ -49,7 +84,7 @@ public sealed class PathTemplateService : IPathTemplateService
         }
 
         // 顺序很重要：环境变量先展开，其展开结果里的占位符仍会被后续替换处理。
-        var expanded = Environment.ExpandEnvironmentVariables(template);
+        var expanded = ExpandKnownEnvironmentVariables(template);
         var moment = now ?? DateTime.Now;
 
         return BraceRegex.Replace(expanded, match =>
@@ -75,7 +110,7 @@ public sealed class PathTemplateService : IPathTemplateService
         }
 
         // 与 Resolve 保持一致：先展开环境变量，避免 %USERPROFILE% 之类的写法被误判。
-        var expanded = Environment.ExpandEnvironmentVariables(template);
+        var expanded = ExpandKnownEnvironmentVariables(template);
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -98,6 +133,234 @@ public sealed class PathTemplateService : IPathTemplateService
         }
 
         return result;
+    }
+
+    /// <inheritdoc />
+    public bool HasWildcard(string template)
+    {
+        if (string.IsNullOrEmpty(template))
+        {
+            return false;
+        }
+
+        // 先展开环境变量：%USERPROFILE% 这类在展开后就不存在了，自然不会误判成通配。
+        var expanded = ExpandKnownEnvironmentVariables(template);
+
+        foreach (Match match in WildcardRegex.Matches(expanded))
+        {
+            if (TryBuildInnerPattern(match.Groups[1].Value, out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<string> ResolveMany(string template, DateTime? now = null)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return Array.Empty<string>();
+        }
+
+        var expanded = ExpandKnownEnvironmentVariables(template);
+        var moment = now ?? DateTime.Now;
+
+        // 无通配：与 Resolve 完全等价（单元素），保持旧行为不变。
+        if (!HasWildcard(expanded))
+        {
+            return new[] { Resolve(expanded, moment) };
+        }
+
+        // 用户可能粘正斜杠路径（A:/测试/%MM-DD%），统一成正斜杠前的反斜杠再按层级拆。
+        var normalized = expanded.Replace('/', '\\');
+
+        var segments = normalized.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
+
+        // 根：盘符（C:）或 UNC（\\server\share）。
+        var startIndex = 0;
+        string current;
+
+        if (normalized.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            if (segments.Length < 2)
+            {
+                return Array.Empty<string>();
+            }
+
+            current = @"\\" + segments[0] + @"\" + segments[1];
+            startIndex = 2;
+        }
+        else if (segments.Length > 0 && segments[0].EndsWith(":", StringComparison.Ordinal))
+        {
+            current = segments[0] + @"\";
+            startIndex = 1;
+        }
+        else
+        {
+            // 相对路径不做通配展开：无法可靠定位层级。
+            return Array.Empty<string>();
+        }
+
+        var results = new List<string> { current };
+
+        for (var i = startIndex; i < segments.Length; i++)
+        {
+            var segment = segments[i];
+            var next = new List<string>();
+
+            if (TryBuildWildcardPattern(segment, out var pattern))
+            {
+                var regex = new Regex("^" + pattern + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+                foreach (var prefix in results)
+                {
+                    foreach (var directory in SafeEnumerateDirectories(prefix))
+                    {
+                        if (!regex.IsMatch(Path.GetFileName(directory.TrimEnd('\\'))))
+                        {
+                            continue;
+                        }
+
+                        next.Add(directory);
+
+                        if (next.Count >= MaxWildcardMatches)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (next.Count >= MaxWildcardMatches)
+                    {
+                        break;
+                    }
+                }
+
+                if (next.Count >= MaxWildcardMatches)
+                {
+                    AppServices.Log?.Warn("扫描",
+                        $"通配展开超过 {MaxWildcardMatches} 个目录，已截断：{expanded}");
+                }
+            }
+            else
+            {
+                // 普通段：{...} 仍按原有规则展开成今天的日期。
+                var literal = Resolve(segment, moment);
+
+                foreach (var prefix in results)
+                {
+                    var combined = Path.Combine(prefix, literal);
+                    if (Directory.Exists(combined))
+                    {
+                        next.Add(combined);
+                    }
+                }
+            }
+
+            if (next.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            results = next;
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// 把一个路径段转成正则：其中的 <c>%...%</c> 换成「按 token 的数字模式」，其余字符按字面量转义。
+    /// 返回 false 表示这段里没有**有效**的 <c>%...%</c>（例如 %USERPROFILE%）。
+    /// </summary>
+    private static bool TryBuildWildcardPattern(string segment, out string pattern)
+    {
+        pattern = string.Empty;
+
+        var matches = WildcardRegex.Matches(segment);
+        if (matches.Count == 0)
+        {
+            return false;
+        }
+
+        var builder = new StringBuilder(segment.Length * 2);
+        var cursor = 0;
+        var valid = false;
+
+        foreach (Match match in matches)
+        {
+            if (!TryBuildInnerPattern(match.Groups[1].Value, out var inner))
+            {
+                // 不是日期通配（比如环境变量残留），按字面量处理。
+                continue;
+            }
+
+            builder.Append(Regex.Escape(segment.Substring(cursor, match.Index - cursor)));
+            builder.Append(inner);
+
+            cursor = match.Index + match.Length;
+            valid = true;
+        }
+
+        if (!valid)
+        {
+            return false;
+        }
+
+        builder.Append(Regex.Escape(segment.Substring(cursor)));
+        pattern = builder.ToString();
+        return true;
+    }
+
+    /// <summary>把 <c>%...%</c> 的**内部串**转成正则（不含 % 本身）。</summary>
+    private static bool TryBuildInnerPattern(string inner, out string pattern)
+    {
+        pattern = string.Empty;
+
+        if (!TryParseInner(inner, out var pieces) || !ContainsToken(pieces))
+        {
+            return false;
+        }
+
+        var builder = new StringBuilder(inner.Length * 2);
+
+        foreach (var piece in pieces)
+        {
+            builder.Append(piece.Token is null ? Regex.Escape(piece.Literal) : TokenPattern(piece.Token));
+        }
+
+        pattern = builder.ToString();
+        return true;
+    }
+
+    /// <summary>token → 正则片段。两位 token 严格两位，单字母 token 允许 1–2 位（11-6 与 11-06 都能匹配）。</summary>
+    private static string TokenPattern(string token) => token.ToLowerInvariant() switch
+    {
+        "yyyy" => @"\d{4}",
+        "yy" => @"\d{2}",
+        "mm" => @"\d{2}",
+        "dd" => @"\d{2}",
+        "hh" => @"\d{2}",
+        "mi" => @"\d{2}",
+        "ss" => @"\d{2}",
+        "m" => @"\d{1,2}",
+        "d" => @"\d{1,2}",
+        "h" => @"\d{1,2}",
+        _ => @"\d+"
+    };
+
+    /// <summary>枚举子目录，吞掉权限/网络错误，避免一个坏目录打断整次展开。</summary>
+    private static IEnumerable<string> SafeEnumerateDirectories(string path)
+    {
+        try
+        {
+            return Directory.EnumerateDirectories(path);
+        }
+        catch (Exception)
+        {
+            return Array.Empty<string>();
+        }
     }
 
     /// <summary>把花括号内部串切成「token 片段 / 字面量片段」，任一字母片段解析失败即整体失败。</summary>

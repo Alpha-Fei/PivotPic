@@ -27,6 +27,20 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
     private readonly IUpdateService _updates;
 
     private System.Threading.Timer? _timer;
+
+    /// <summary>后台下载的取消源：**归协调器所有**，不跟着更新窗口走。</summary>
+    private CancellationTokenSource? _downloadCts;
+
+    /// <summary>进行中的后台下载任务（多处调用共享同一个，避免下两遍）。</summary>
+    private Task<string>? _downloadTask;
+
+    /// <summary>已下载并校验通过的安装包路径。</summary>
+    private string? _downloadedPackagePath;
+
+    /// <summary>已下载安装包对应的版本号，避免换了版本还拿旧包。</summary>
+    private string? _downloadedTag;
+
+    private readonly object _downloadGate = new();
     private CancellationTokenSource? _checkCts;
     private ReleaseInfo? _available;
     private UpdateCheckOutcome _outcome = UpdateCheckOutcome.Unknown;
@@ -429,18 +443,130 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
     // ============================================================
 
     /// <inheritdoc />
-    public async Task<string> DownloadAndLaunchAsync(
-        ReleaseInfo release, IProgress<UpdateProgress> progress, CancellationToken cancellationToken)
-    {
-        var packagePath = await _updates
-            .DownloadAndVerifyAsync(release, progress, cancellationToken)
-            .ConfigureAwait(false);
+    public bool HasDownloadedPackage =>
+        !string.IsNullOrEmpty(_downloadedPackagePath) && File.Exists(_downloadedPackagePath);
 
-        if (!File.Exists(packagePath))
+    /// <inheritdoc />
+    public string? DownloadedPackagePath => HasDownloadedPackage ? _downloadedPackagePath : null;
+
+    /// <inheritdoc />
+    public bool IsDownloading
+    {
+        get
         {
-            throw new UpdateFailedException("安装包不见了，请重试", $"下载后文件不存在：{packagePath}");
+            lock (_downloadGate)
+            {
+                return _downloadTask is { IsCompleted: false };
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public event EventHandler<string>? DownloadCompleted;
+
+    /// <inheritdoc />
+    public Task<string> StartBackgroundDownload(ReleaseInfo release, IProgress<UpdateProgress>? progress = null)
+    {
+        lock (_downloadGate)
+        {
+            // 已经有一份同版本的包 → 直接复用，不重复下载。
+            if (HasDownloadedPackage && string.Equals(_downloadedTag, release.TagName, StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(_downloadedPackagePath!);
+            }
+
+            // 正在下 → 共享同一个任务。
+            if (_downloadTask is { IsCompleted: false })
+            {
+                return _downloadTask;
+            }
+
+            _downloadCts?.Dispose();
+            _downloadCts = new CancellationTokenSource();
+
+            var token = _downloadCts.Token;
+            var tag = release.TagName;
+
+            _downloadTask = RunAsync();
+
+            return _downloadTask;
+
+            async Task<string> RunAsync()
+            {
+                try
+                {
+                    AppServices.Log?.Info("更新", $"开始后台下载 {tag}（与更新窗口无关，关窗不中断）");
+
+                    var path = await _updates
+                        .DownloadAndVerifyAsync(release, progress, token)
+                        .ConfigureAwait(false);
+
+                    if (!File.Exists(path))
+                    {
+                        throw new UpdateFailedException("安装包不见了，请重试", $"下载后文件不存在：{path}");
+                    }
+
+                    _downloadedPackagePath = path;
+                    _downloadedTag = tag;
+
+                    AppServices.Log?.Info("更新", $"后台下载完成：{tag} → {path}");
+
+                    // 通知界面层（窗口关着时由托盘提示，窗口开着时窗口自己切到「可安装」）。
+                    OnUi(() => DownloadCompleted?.Invoke(this, path));
+
+                    return path;
+                }
+                catch (OperationCanceledException)
+                {
+                    AppServices.Log?.Info("更新", "后台下载已取消");
+                    throw;
+                }
+                catch (UpdateFailedException ex)
+                {
+                    // 失败必须静默：只写日志，不弹窗、不反复打扰。
+                    AppServices.Log?.Warn("更新", $"后台下载失败：{ex.Message}");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    AppServices.Log?.Warn("更新", $"后台下载异常：{ex.Message}");
+                    throw new UpdateFailedException("更新失败，请稍后重试", ex.Message, ex);
+                }
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void CancelBackgroundDownload()
+    {
+        lock (_downloadGate)
+        {
+            try
+            {
+                _downloadCts?.Cancel();
+            }
+            catch (Exception)
+            {
+                // 取消失败不影响后续流程。
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void LaunchDownloadedPackage()
+    {
+        if (DownloadedPackagePath is not { } path)
+        {
+            AppServices.Log?.Warn("更新", "还没有下载好的安装包，忽略安装请求");
+            return;
         }
 
+        LaunchPackage(path);
+    }
+
+    /// <summary>拉起安装程序并请求退出当前进程（下载与「托盘点安装」两条路共用）。</summary>
+    private void LaunchPackage(string packagePath)
+    {
         var processId = Environment.ProcessId;
 
         try
@@ -474,6 +600,22 @@ internal sealed class UpdateCoordinator : IUpdateCoordinator
             // 通过注入的委托退出，服务层不引用 App / MainWindow（否则无法独立编译与测试）。
             OnUi(() => AppServices.ExitRequested?.Invoke());
         });
+    }
+
+    /// <inheritdoc />
+    public async Task<string> DownloadAndLaunchAsync(
+        ReleaseInfo release, IProgress<UpdateProgress> progress, CancellationToken cancellationToken)
+    {
+        var packagePath = await _updates
+            .DownloadAndVerifyAsync(release, progress, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!File.Exists(packagePath))
+        {
+            throw new UpdateFailedException("安装包不见了，请重试", $"下载后文件不存在：{packagePath}");
+        }
+
+        LaunchPackage(packagePath);
 
         return packagePath;
     }

@@ -151,16 +151,26 @@
                         BorderThickness="1"
                         CornerRadius="8"
                         Padding="14,12">
-                    <ScrollViewer MaxHeight="200"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <TextBlock x:Name="BodyText"
-                                   FontFamily="{DynamicResource Font.UI}"
-                                   FontSize="12.5"
-                                   LineHeight="21"
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource Text.Secondary}" />
-                    </ScrollViewer>
+                    <StackPanel>
+                        <ScrollViewer x:Name="BodyScroll" MaxHeight="200"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <TextBlock x:Name="BodyText"
+                                       FontFamily="{DynamicResource Font.UI}"
+                                       FontSize="12.5"
+                                       LineHeight="21"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource Text.Secondary}" />
+                        </ScrollViewer>
+
+                        <Button x:Name="BodyMoreButton"
+                                Style="{StaticResource Btn.Ghost}"
+                                HorizontalAlignment="Left"
+                                Margin="0,6,0,0"
+                                Visibility="Collapsed"
+                                Content="查看完整说明"
+                                Click="OnBodyMoreClick" />
+                    </StackPanel>
                 </Border>
 
                 <!-- ══════════ 下载进度 / 错误 ══════════ -->

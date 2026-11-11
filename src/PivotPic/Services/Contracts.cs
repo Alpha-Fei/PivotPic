@@ -37,7 +37,22 @@ public interface ILogService
 public interface IPathTemplateService
 {
     string Resolve(string template, DateTime? now = null);
+
     IReadOnlyList<string> FindUnknownPlaceholders(string template);
+
+    /// <summary>
+    /// 模板里是否含**有效的** <c>%...%</c> 通配段（内部能按 token 表完整解析）。
+    /// 注意 <c>%USERPROFILE%</c> 这类环境变量不算通配：它的内容不是合法 token。
+    /// </summary>
+    bool HasWildcard(string template);
+
+    /// <summary>
+    /// 展开模板为**所有实际存在的目录**。
+    /// 无通配时等价于 <see cref="Resolve"/> 返回单元素（目录不存在也返回单元素，交给调用方判断）；
+    /// 有通配时按目录层级逐段匹配（只用 EnumerateDirectories，不递归整棵树），
+    /// 目录不存在则返回空列表。最多返回 500 个匹配。
+    /// </summary>
+    IReadOnlyList<string> ResolveMany(string template, DateTime? now = null);
 }
 
 /// <summary>图片探测与方向归一化。</summary>
@@ -110,6 +125,12 @@ public interface ITrayService : IDisposable
 
     /// <summary>在托盘菜单里显示「发现新版本」入口；传入 null 表示移除该入口。</summary>
     void ShowUpdateBadge(string? versionText);
+
+    /// <summary>安装包已下载完成：入口文案改为「安装新版本 vX」。</summary>
+    void ShowInstallReady(string versionText);
+
+    /// <summary>弹一次托盘气泡（不激活窗口、不抢焦点）。</summary>
+    void ShowBalloon(string title, string message);
 }
 
 public enum TrayState
@@ -274,6 +295,35 @@ public interface IUpdateCoordinator : IDisposable
 
     /// <summary>设置页「上次检查」的展示文案。</summary>
     string LastCheckText { get; }
+
+    // ==================== 后台下载 ====================
+
+    /// <summary>是否已经有一份下载并校验完成的安装包可以直接安装。</summary>
+    bool HasDownloadedPackage { get; }
+
+    /// <summary>已下载安装包的路径；没有则为 null。</summary>
+    string? DownloadedPackagePath { get; }
+
+    /// <summary>是否正在后台下载。</summary>
+    bool IsDownloading { get; }
+
+    /// <summary>后台下载完成（载荷是安装包路径）。窗口关着也能收到，用于托盘提示。</summary>
+    event EventHandler<string>? DownloadCompleted;
+
+    /// <summary>
+    /// 启动后台下载（下载 + 校验 + 落盘）。**下载生命期归协调器**，与更新窗口无关：
+    /// 窗口关了、按 Esc、点「稍后」都不会中断它。
+    /// 重复调用会共享同一个进行中的任务，不会下两遍。
+    /// </summary>
+    /// <param name="release">目标版本。</param>
+    /// <param name="progress">可选的进度回调（窗口关掉后就没人接了，传 null 即可）。</param>
+    Task<string> StartBackgroundDownload(ReleaseInfo release, IProgress<UpdateProgress>? progress = null);
+
+    /// <summary>显式取消后台下载（只有用户点「取消下载」时才调）。</summary>
+    void CancelBackgroundDownload();
+
+    /// <summary>用已下载的安装包拉起安装程序并请求退出当前进程。</summary>
+    void LaunchDownloadedPackage();
 }
 
 /// <summary>

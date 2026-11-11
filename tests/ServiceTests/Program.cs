@@ -1,3 +1,4 @@
+using IODirectory = System.IO.Directory;
 using IOPath = System.IO.Path;
 using PivotPic.Models;
 using PivotPic.ViewModels;
@@ -54,6 +55,68 @@ Section("未识别占位符检测");
 var unknown = tmpl.FindUnknownPlaceholders(@"D:\{mm-dd}\{xyz}\{yyyyMMdd}\{mm-xyz}");
 Check("未识别数量", unknown.Count.ToString(), "2");
 Check("未识别内容", string.Join(",", unknown), "{xyz},{mm-xyz}");
+
+// ---------------------------------------------------------------- 通配占位符
+Section("通配占位符 %...%（HasWildcard）");
+
+Check("有效通配 %mm-dd%", tmpl.HasWildcard(@"A:/图/%mm-dd%/喷绘").ToString(), "True");
+Check("花括号不算通配", tmpl.HasWildcard(@"A:/图/{mm-dd}/喷绘").ToString(), "False");
+Check("环境变量不算通配 %USERPROFILE%", tmpl.HasWildcard(@"%USERPROFILE%\图").ToString(), "False");
+Check("非法 token 不算通配 %xyz%", tmpl.HasWildcard(@"A:/图/%xyz%").ToString(), "False");
+Check("大小写等价 %MM-DD%", tmpl.HasWildcard(@"A:/图/%MM-DD%").ToString(), "True");
+Check("多段通配", tmpl.HasWildcard(@"A:/%yyyy%/%mm-dd%").ToString(), "True");
+
+// 造一棵真实的目录树用于展开测试
+var wcRoot = IOPath.Combine(IOPath.GetTempPath(), "pivotpic_wildcard_" + Guid.NewGuid().ToString("N").Substring(0, 6));
+var wcToday = new DateTime(2026, 11, 4);
+var todayText = wcToday.ToString("MM-dd");
+
+foreach (var dir in new[]
+{
+    IOPath.Combine(wcRoot, "11-05", "喷绘"),
+    IOPath.Combine(wcRoot, "11-06", "喷绘"),
+    IOPath.Combine(wcRoot, "11-07", "喷绘"),
+    IOPath.Combine(wcRoot, "abc", "喷绘"),
+    IOPath.Combine(wcRoot, "2026", "11-05"),
+    IOPath.Combine(wcRoot, "2026", "11-06"),
+    IOPath.Combine(wcRoot, "notadate")
+})
+{
+    IODirectory.CreateDirectory(dir);
+}
+
+Section("通配占位符展开（ResolveMany）");
+
+var single = tmpl.ResolveMany(IOPath.Combine(wcRoot, "11-05", "喷绘"), wcToday);
+Check("无通配返回单元素", single.Count.ToString(), "1");
+Check("无通配等于 Resolve", single[0], tmpl.Resolve(IOPath.Combine(wcRoot, "11-05", "喷绘"), wcToday));
+
+var dates = tmpl.ResolveMany(IOPath.Combine(wcRoot, "%mm-dd%", "喷绘"), wcToday);
+Check("匹配 3 个日期目录（abc 被忽略）", dates.Count.ToString(), "3");
+Check("第一个是 11-05", IOPath.GetFileName(IOPath.GetDirectoryName(dates[0])), "11-05");
+Check("最后一个是 11-07", IOPath.GetFileName(IOPath.GetDirectoryName(dates[2])), "11-07");
+
+var nested = tmpl.ResolveMany(IOPath.Combine(wcRoot, "%yyyy%", "%mm-dd%"), wcToday);
+Check("两层通配展开", nested.Count.ToString(), "2");
+
+var mixed = tmpl.ResolveMany(IOPath.Combine(wcRoot, "%mm-dd%", "{mm-dd}"), wcToday);
+Check("混合模板：{} 展开成今天（无该目录则为 0）", mixed.Count.ToString(), "0");
+
+IODirectory.CreateDirectory(IOPath.Combine(wcRoot, "11-06", todayText));
+var mixed2 = tmpl.ResolveMany(IOPath.Combine(wcRoot, "%mm-dd%", "{mm-dd}"), wcToday);
+Check("混合模板命中今天目录", mixed2.Count.ToString(), "1");
+
+Check("目录不存在返回空", tmpl.ResolveMany(IOPath.Combine(wcRoot, "不存在%mm-dd%"), wcToday).Count.ToString(), "0");
+Check("相对路径不做展开", tmpl.ResolveMany(@"%mm-dd%\喷绘", wcToday).Count.ToString(), "0");
+
+try
+{
+    IODirectory.Delete(wcRoot, recursive: true);
+}
+catch (Exception)
+{
+    // 清理失败不影响测试结论。
+}
 
 // ---------------------------------------------------------------- 模型默认值
 Section("配置默认值");
