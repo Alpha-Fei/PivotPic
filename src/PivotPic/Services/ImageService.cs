@@ -753,88 +753,80 @@ public sealed class ImageService : IImageService
     }
 
     /// <summary>
-    /// 对未压缩 TIFF 文件做「预乘 alpha」：读出 StripOffsets 处的像素字节，
-    /// 对每个像素的 color = color * alpha / 255，alpha 不动，然后写回。
-    /// <para>要求文件是 compression=none（未压缩），否则像素数据不在文件里连续排列。</para>
+    /// 对未压缩 TIFF 的像素字节做预乘：color = color * alpha / 255，alpha 不动。
+    /// 支持多 strip（StripOffsets count>1），逐 strip 处理。
     /// </summary>
     private static bool PremultiplyTiffPixels(string path, out string error)
     {
         error = string.Empty;
-
         try
         {
             var data = File.ReadAllBytes(path);
             var little = data[0] == 'I';
-            var ifdOff = little
-                ? data[4] | (data[5] << 8) | (data[6] << 16) | (data[7] << 24)
-                : (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
-            var count = little ? data[ifdOff] | (data[ifdOff + 1] << 8) : (data[ifdOff] << 8) | data[ifdOff + 1];
+            int rd(int off) => little
+                ? data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24)
+                : (data[off] << 24) | (data[off + 1] << 16) | (data[off + 2] << 8) | data[off + 3];
+            int rd16(int off) => little ? data[off] | (data[off + 1] << 8) : (data[off] << 8) | data[off + 1];
 
-            int stripOffset = -1, stripCount = 0, spp = 0, width = 0, height = 0;
+            var ifdOff = rd(4);
+            var entryCount = rd16(ifdOff);
+            int spp = 0, width = 0, height = 0, bitsPerSample = 8;
+            var stripOffsets = new List<int>();
+            var stripByteCounts = new List<int>();
 
-            for (var i = 0; i < count; i++)
+            for (var i = 0; i < entryCount; i++)
             {
-                var off = ifdOff + 2 + i * 12;
-                var tag = little ? data[off] | (data[off + 1] << 8) : (data[off] << 8) | data[off + 1];
-                var typ = little ? data[off + 2] | (data[off + 3] << 8) : (data[off + 2] << 8) | data[off + 3];
-                var cnt = little
-                    ? data[off + 4] | (data[off + 5] << 8) | (data[off + 6] << 16) | (data[off + 7] << 24)
-                    : (data[off + 4] << 24) | (data[off + 5] << 16) | (data[off + 6] << 8) | data[off + 7];
+                var o = ifdOff + 2 + i * 12;
+                var tag = rd16(o);
+                var cnt = rd(o + 4);
 
                 if (tag == 273) // StripOffsets
                 {
-                    if (cnt == 1)
-                    {
-                        stripOffset = little
-                            ? data[off + 8] | (data[off + 9] << 8) | (data[off + 10] << 16) | (data[off + 11] << 24)
-                            : (data[off + 8] << 24) | (data[off + 9] << 16) | (data[off + 10] << 8) | data[off + 11];
-                    }
-                    else
-                    {
-                        var ptr = little
-                            ? data[off + 8] | (data[off + 9] << 8) | (data[off + 10] << 16) | (data[off + 11] << 24)
-                            : (data[off + 8] << 24) | (data[off + 9] << 16) | (data[off + 10] << 8) | data[off + 11];
-                        stripOffset = little ? data[ptr] | (data[ptr + 1] << 8) | (data[ptr + 2] << 16) | (data[ptr + 3] << 24)
-                            : (data[ptr] << 24) | (data[ptr + 1] << 16) | (data[ptr + 2] << 8) | data[ptr + 3];
-                    }
+                    if (cnt == 1) stripOffsets.Add(rd(o + 8));
+                    else { var ptr = rd(o + 8); for (var k = 0; k < cnt; k++) stripOffsets.Add(rd(ptr + k * 4)); }
                 }
-                else if (tag == 277) spp = little ? data[off + 8] | (data[off + 9] << 8) : (data[off + 8] << 8) | data[off + 9];
-                else if (tag == 256) width = little ? data[off + 8] | (data[off + 9] << 8) : (data[off + 8] << 8) | data[off + 9];
-                else if (tag == 257) height = little ? data[off + 8] | (data[off + 9] << 8) : (data[off + 8] << 8) | data[off + 9];
+                else if (tag == 279) // StripByteCounts
+                {
+                    if (cnt == 1) stripByteCounts.Add(rd(o + 8));
+                    else { var ptr = rd(o + 8); for (var k = 0; k < cnt; k++) stripByteCounts.Add(rd(ptr + k * 4)); }
+                }
+                else if (tag == 277) spp = rd16(o + 8);
+                else if (tag == 256) width = rd16(o + 8);
+                else if (tag == 257) height = rd16(o + 8);
+                else if (tag == 258) // BitsPerSample
+                {
+                    if (cnt == 1) bitsPerSample = rd16(o + 8);
+                    else { var ptr = rd(o + 8); bitsPerSample = rd16(ptr); }
+                }
             }
 
-            if (stripOffset < 0 || spp < 2 || width <= 0 || height <= 0)
+            if (spp < 2 || width <= 0 || height <= 0 || stripOffsets.Count == 0)
             {
-                error = $"TIFF 参数异常：strip={stripOffset} spp={spp} {width}x{height}";
+                error = $"TIFF 参数异常：spp={spp} {width}x{height} strips={stripOffsets.Count} bps={bitsPerSample}";
                 return false;
             }
+            if (bitsPerSample != 8) { error = $"仅支持 8bit，实际 bps={bitsPerSample}"; return false; }
 
-            var total = (long)width * height * spp;
-            if (stripOffset + total > data.Length)
-            {
-                error = $"像素数据超出文件长度：offset={stripOffset} total={total} fileLen={data.Length}";
-                return false;
-            }
-
-            // 预乘：color = color * alpha / 255，alpha 不动。
             var ai = spp - 1;
-            for (long px = 0; px < (long)width * height; px++)
+            for (var s = 0; s < stripOffsets.Count; s++)
             {
-                var o = stripOffset + px * spp;
-                var a = data[o + ai];
-                if (a is 255 or 0) continue;
-                for (var c = 0; c < ai; c++)
-                    data[o + c] = (byte)((data[o + c] * a + 127) / 255);
+                var off = stripOffsets[s];
+                var len = s < stripByteCounts.Count ? stripByteCounts[s] : data.Length - off;
+                var pixels = len / spp;
+                for (var px = 0; px < pixels; px++)
+                {
+                    var o = off + px * spp;
+                    var a = data[o + ai];
+                    if (a is 255 or 0) continue;
+                    for (var c = 0; c < ai; c++)
+                        data[o + c] = (byte)((data[o + c] * a + 127) / 255);
+                }
             }
 
             File.WriteAllBytes(path, data);
             return true;
         }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
+        catch (Exception ex) { error = ex.Message; return false; }
     }
 
     /// <summary>中转文件目录：**系统临时目录**，绝不放业务目录。</summary>
@@ -1246,53 +1238,43 @@ public sealed class ImageService : IImageService
             var delta = direction == RotateDirection.Clockwise ? 90 : -90;
             var baseAngle = OrientationToAngle(probe.Orientation);
 
-            // 读源图 ExtraSamples(338) 判断是否需要预乘还原。
+            // 源图 ExtraSamples=1（预乘 alpha）时，vips 加载会自动反预乘。
+            // 方案 E：加载前把副本的 ExtraSamples 改成 2，骗过 vips 不做反预乘，
+            // vips 原样搬运预乘字节（旋转只是位置置换），全程零像素运算。
+            // 写盘后再用 TryRestoreAlphaTags 把标签改回源图值。
             var srcExtra = TiffTagWriter.ReadShortArray(path, 338);
             var needsPremultiply = srcExtra is { Count: > 0 } && srcExtra[0] == 1;
-            System.Console.WriteLine($"[DEBUG] srcExtra={string.Join(",", srcExtra ?? Array.Empty<int>())} needsPremultiply={needsPremultiply}");
+            var rotateSource = path;
+            string? sourceCopy = null;
 
-            // 预乘 alpha 时用未压缩写盘，这样写完后可以直接改文件里的像素字节。
-            var options = needsPremultiply ? "compression=none" : BuildVipsSaveOptions(path, extension);
-
-            var outcome = VipsNative.TryRotate(
-                path, tempPath, probe.PixelWidth, probe.OrientedWidth, baseAngle, delta,
-                options, out var outWidth, out var outHeight);
-
-            // 源图是预乘 alpha 时，vips 写盘后直接改文件里的像素字节做预乘。
-            if (outcome == VipsNative.VipsRotateOutcome.Success && needsPremultiply)
+            if (needsPremultiply)
             {
-                if (!PremultiplyTiffPixels(tempPath, out var pmError))
+                sourceCopy = GetWorkTempPath(path, ".src", extension);
+                File.Copy(path, sourceCopy, overwrite: true);
+                if (!TiffTagWriter.TryApply(sourceCopy, 338, new[] { 2 }, out var patchError))
                 {
-                    TryDelete(tempPath);
-                    AppServices.Log?.Error("处理", $"预乘 alpha 修正失败：{pmError}",
+                    TryDelete(sourceCopy);
+                    AppServices.Log?.Error("处理", $"修改副本 ExtraSamples 失败：{patchError}",
                         directory, Path.GetFileName(path));
                     return VipsNative.VipsRotateOutcome.WriteFailed;
                 }
-
-                // 用 vips 重新压缩为 LZW（compression=none 的文件太大）。
-                // 此时文件里的像素已经预乘、元数据也正确，vips 读进来直接写 LZW 即可。
-                var recompressPath = GetWorkTempPath(path, ".vtmp2", extension);
-                var rc = VipsNative.TryRotate(tempPath, recompressPath,
-                    outWidth, outHeight, 0, 0, BuildVipsSaveOptions(path, extension),
-                    out var _, out var _);
-                if (rc == VipsNative.VipsRotateOutcome.Success)
-                {
-                    TryDelete(tempPath);
-                    tempPath = recompressPath;
-                }
-                else
-                {
-                    TryDelete(recompressPath);
-                    // 重新压缩失败不影响正确性，只是文件大一些。
-                }
+                rotateSource = sourceCopy;
             }
+
+            var options = BuildVipsSaveOptions(path, extension);
+
+            var outcome = VipsNative.TryRotate(
+                rotateSource, tempPath, probe.PixelWidth, probe.OrientedWidth, baseAngle, delta,
+                options, out var outWidth, out var outHeight);
+
 
             if (outcome != VipsNative.VipsRotateOutcome.Success)
             {
-                // 日志由调用方按 outcome 分级写（SourceRejected 记 Error，其余记 Warn），这里只清理临时文件。
                 TryDelete(tempPath);
                 return outcome;
             }
+
+            if (sourceCopy is not null) { TryDelete(sourceCopy); }
 
             // 写回必须走 Win32 就地覆写：SMB 上 File.Replace / File.Delete 在「文件被本进程读过」之后
             // 必然返回共享冲突，网络盘上每一张需要旋转的图都会因此失败（v1.3.24 的真实事故）。

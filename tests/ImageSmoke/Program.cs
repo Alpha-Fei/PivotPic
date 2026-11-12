@@ -119,6 +119,7 @@ internal static class Program
         Run("28", "RGBA TIFF 旋转后 alpha 仍是 0..255 且 ExtraSamples=2", () => Case28Test(image));
         Run("29", "预乘 alpha(ExtraSamples=1) 旋转后必须仍是 1，SampleFormat 不得凭空出现", () => Case29Test(image));
         Run("30", "独立 alpha(ExtraSamples=2) 旋转后必须仍是 2", () => Case30Test(image));
+        Run("31", "TIFF 旋转前后逐通道原始字节分布一致 + 标签逐值相等（黄金判据）", () => Case31Test(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -1070,6 +1071,71 @@ internal static class Program
             $"Rotated={result.Rotated} 源Extra=[{string.Join(",", before?.ExtraSamples ?? Array.Empty<int>())}]" +
             $" → 输出Extra=[{string.Join(",", after?.ExtraSamples ?? Array.Empty<int>())}]" +
             $" SampleFormat={(sampleFormat is null ? "无" : string.Join(",", sampleFormat))} alpha={afterAlpha.min}..{afterAlpha.max}");
+    }
+
+    /// <summary>
+    /// 黄金判据：旋转前后逐通道原始字节分布（256 桶直方图）必须一致，
+    /// 且 Photometric/ExtraSamples 与源图逐值相等。
+    /// 用 WPF 解码比直方图（不走 vips，不受 ExtraSamples 反预乘干扰）。
+    /// </summary>
+    private static void Case31Test(IImageService image)
+    {
+        var dir = Path.Combine(_root, "tiff_bytes");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "bytes_3000x2000.tif");
+        MakeRgbaTiff(path, 3000, 2000);
+
+        var beforeStruct = ImageService.ProbeTiffStructure(path);
+        var beforeHist = ReadChannelHistograms(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, DefaultMaxPixels);
+
+        var afterStruct = ImageService.ProbeTiffStructure(path);
+        var afterHist = ReadChannelHistograms(path);
+
+        var tagsOk = beforeStruct is not null && afterStruct is not null
+                     && afterStruct.Value.SamplesPerPixel == beforeStruct.Value.SamplesPerPixel
+                     && afterStruct.Value.Photometric == beforeStruct.Value.Photometric
+                     && afterStruct.Value.ExtraSamples.Length == beforeStruct.Value.ExtraSamples.Length
+                     && afterStruct.Value.ExtraSamples.SequenceEqual(beforeStruct.Value.ExtraSamples);
+
+        var histOk = beforeHist != null && afterHist != null && beforeHist.Length == afterHist.Length;
+        if (histOk)
+        {
+            for (var ch = 0; ch < beforeHist.Length; ch++)
+            {
+                if (!beforeHist[ch].SequenceEqual(afterHist[ch])) { histOk = false; break; }
+            }
+        }
+
+        var ok = result.Rotated && tagsOk && histOk;
+        Check("31", "TIFF 旋转前后逐通道原始字节分布一致 + 标签逐值相等", ok,
+            $"Rotated={result.Rotated} 标签相等={tagsOk} 直方图相等={histOk}" +
+            $" 源=SPP{beforeStruct?.SamplesPerPixel}/P{beforeStruct?.Photometric}/Extra[{string.Join(",", beforeStruct?.ExtraSamples ?? Array.Empty<int>())}]" +
+            $" → 出=SPP{afterStruct?.SamplesPerPixel}/P{afterStruct?.Photometric}/Extra[{string.Join(",", afterStruct?.ExtraSamples ?? Array.Empty<int>())}]");
+    }
+
+    /// <summary>用 WPF 解码读每个通道 256 桶直方图（不走 vips，不受 ExtraSamples 反预乘干扰）。</summary>
+    private static long[][]? ReadChannelHistograms(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            var converted = new FormatConvertedBitmap(decoder.Frames[0], PixelFormats.Bgra32, null, 0);
+            var stride = converted.PixelWidth * 4;
+            var buffer = new byte[stride * converted.PixelHeight];
+            converted.CopyPixels(buffer, stride, 0);
+            var hists = new long[4][];
+            for (var c = 0; c < 4; c++) hists[c] = new long[256];
+            for (var i = 0; i < buffer.Length; i += 4)
+            {
+                hists[0][buffer[i + 2]]++; hists[1][buffer[i + 1]]++;
+                hists[2][buffer[i]]++; hists[3][buffer[i + 3]]++;
+            }
+            return hists;
+        }
+        catch { return null; }
     }
 
     // ---------- 基础设施 ----------

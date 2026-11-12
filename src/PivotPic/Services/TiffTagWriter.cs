@@ -116,7 +116,9 @@ public static class TiffTagWriter
     {
         error = string.Empty;
 
-        foreach (var tag in new[] { 338, 339 })
+        // 262=PhotometricInterpretation, 338=ExtraSamples, 339=SampleFormat
+        // 三个标签必须与源图逐值一致，否则 RIP 按错误语义解释像素数据（颜色全错）。
+        foreach (var tag in new[] { 262, 338, 339 })
         {
             var sourceValues = ReadShortArray(sourcePath, tag);
 
