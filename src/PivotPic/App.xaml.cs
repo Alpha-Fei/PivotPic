@@ -147,6 +147,9 @@ public partial class App : Application
                 Shell?.OpenUpdateEntry();
             };
 
+            // 中转文件都落在 %TEMP%\PivotPic\work，启动时清掉超过 24 小时的残留。
+            ImageService.CleanupWorkTemp();
+
             // 更新检查最后启动：它会在后台拉起加速组件并延迟 5 秒做静默检查，
             // 放到最后可以确保主界面、监控、托盘都先就位。
             AppServices.UpdateCoordinator?.Start();

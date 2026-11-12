@@ -115,6 +115,8 @@ internal static class Program
         Run("23", "转基线输出结构：SOF0 + DQT≥2 + RST>0 + DPI 保留", () => Case23Test(image));
         Run("24", "CMYK 转基线：APP14 transform=2 + 分量 ID 1..4", () => Case24Test(image));
         Run("25", "写回时目标被占用：退避重试后成功且不留临时文件", () => Case25Test(image));
+        Run("27", "中转文件不落在业务目录（全程只有原图一个文件）", () => Case27Test(image));
+        Run("28", "RGBA TIFF 旋转后 alpha 仍是 0..255 且 ExtraSamples=2", () => Case28Test(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -842,6 +844,168 @@ internal static class Program
         Check("25", "写回时目标被占用：重试后成功且不留临时文件", ok,
             $"Rotated={result.Rotated} 尺寸={probe?.PixelWidth}x{probe?.PixelHeight} " +
             $"Message={result.Message} 残留={leftovers}");
+    }
+
+    /// <summary>
+    /// 中转文件必须落在系统临时目录：业务目录里如果短暂出现一张「完整可打开的图」，
+    /// 打印软件按目录扫描就会把它当新图收走 → 多印一张，这是真实的经济损失。
+    /// </summary>
+    private static void Case27Test(IImageService image)
+    {
+        var dir = Path.Combine(_root, "work_temp");
+        Directory.CreateDirectory(dir);
+
+        // 先清空目录，保证断言看到的是本次产生的文件。
+        foreach (var stale in Directory.GetFiles(dir))
+        {
+            TryDeleteFile(stale);
+        }
+
+        var path = Path.Combine(dir, "temp_check_320x180.jpg");
+        MakeImage(path, 320, 180, PixelFormats.Bgr24, new JpegBitmapEncoder { QualityLevel = 90 });
+
+        var before = SnapshotNames(dir);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, DefaultMaxPixels);
+
+        var after = SnapshotNames(dir);
+
+        // 业务目录里从头到尾只能有原图一个文件。
+        var onlyOriginal = after.Count == 1
+                           && after[0] == Path.GetFileName(path);
+        var sameAsBefore = before.Count == after.Count;
+
+        // 中转路径必须指向 %TEMP%\PivotPic\work。
+        var workTemp = ImageService.GetWorkTempPath(path, ".vtmp", ".jpg");
+        var tempRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "PivotPic", "work"));
+        var inTemp = Path.GetFullPath(workTemp).StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase);
+
+        var ok = result.Rotated && onlyOriginal && sameAsBefore && inTemp;
+
+        Check("27", "中转文件不落在业务目录", ok,
+            $"Rotated={result.Rotated} 目录文件=[{string.Join(",", after)}] 中转路径在临时目录={inTemp}");
+    }
+
+    /// <summary>
+    /// RGBA TIFF（真的带透明像素）旋转后必须仍是 4 通道 + ExtraSamples=2 + alpha 含 0。
+    /// alpha 丢了 → 打印出来就没有透明度，属于会直接造成经济损失的错误。
+    /// </summary>
+    private static void Case28Test(IImageService image)
+    {
+        var dir = Path.Combine(_root, "tiff_alpha");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "rgba_3000x2000.tif");
+
+        MakeRgbaTiff(path, 3000, 2000);
+
+        var beforeStructure = ImageService.ProbeTiffStructure(path);
+        var beforeAlpha = ReadAlphaRange(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, DefaultMaxPixels);
+
+        var afterStructure = ImageService.ProbeTiffStructure(path);
+        var afterAlpha = ReadAlphaRange(path);
+        var afterProbe = image.Probe(path);
+
+        var structureOk = beforeStructure is not null && afterStructure is not null
+                          && afterStructure.Value.SamplesPerPixel == beforeStructure.Value.SamplesPerPixel
+                          && afterStructure.Value.Photometric == beforeStructure.Value.Photometric
+                          && afterStructure.Value.ExtraSamples.Length > 0
+                          && afterStructure.Value.ExtraSamples[0] == 2;
+
+        var alphaOk = beforeAlpha.min == 0 && afterAlpha.min == 0
+                      && beforeAlpha.max == 255 && afterAlpha.max == 255;
+
+        var ok = result.Rotated && structureOk && alphaOk
+                 && afterProbe is { PixelWidth: 2000, PixelHeight: 3000 };
+
+        Check("28", "RGBA TIFF 旋转后 alpha 仍为 0..255 且 ExtraSamples=2", ok,
+            $"Rotated={result.Rotated} 源=SPP{beforeStructure?.SamplesPerPixel}/P{beforeStructure?.Photometric}" +
+            $"/Extra[{string.Join(",", beforeStructure?.ExtraSamples ?? Array.Empty<int>())}] alpha={beforeAlpha.min}..{beforeAlpha.max}" +
+            $" → 输出=SPP{afterStructure?.SamplesPerPixel}/P{afterStructure?.Photometric}" +
+            $"/Extra[{string.Join(",", afterStructure?.ExtraSamples ?? Array.Empty<int>())}] alpha={afterAlpha.min}..{afterAlpha.max}");
+    }
+
+    /// <summary>生成一张真正带透明的 RGBA TIFF：中间一块 alpha=0，四周 alpha=255。</summary>
+    private static void MakeRgbaTiff(string path, int width, int height)
+    {
+        const int bytesPerPixel = 4;
+        var stride = width * bytesPerPixel;
+        var pixels = new byte[stride * height];
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var offset = y * stride + x * bytesPerPixel;
+                pixels[offset] = 40;      // B
+                pixels[offset + 1] = 60;  // G
+                pixels[offset + 2] = 200; // R
+                pixels[offset + 3] = 255; // A
+            }
+        }
+
+        // 中间挖一块全透明的洞（1000×1000）。
+        for (var y = height / 4; y < height / 4 + Math.Min(1000, height / 2); y++)
+        {
+            for (var x = width / 3; x < width / 3 + Math.Min(1000, width / 2); x++)
+            {
+                var offset = y * stride + x * bytesPerPixel;
+                pixels[offset] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+                pixels[offset + 3] = 0;
+            }
+        }
+
+        var bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+        var encoder = new TiffBitmapEncoder { Compression = TiffCompressOption.Lzw };
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+
+        using var output = File.Create(path);
+        encoder.Save(output);
+    }
+
+    /// <summary>读图片 alpha 通道的最小/最大值。</summary>
+    private static (int min, int max) ReadAlphaRange(string path)
+    {
+        using var stream = File.OpenRead(path);
+        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        var frame = decoder.Frames[0];
+
+        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+        var stride = converted.PixelWidth * 4;
+        var buffer = new byte[stride * converted.PixelHeight];
+        converted.CopyPixels(buffer, stride, 0);
+
+        var min = 255;
+        var max = 0;
+
+        for (var i = 3; i < buffer.Length; i += 4)
+        {
+            var a = buffer[i];
+            if (a < min) min = a;
+            if (a > max) max = a;
+        }
+
+        return (min, max);
+    }
+
+    private static List<string> SnapshotNames(string dir)
+    {
+        var list = new List<string>();
+        foreach (var file in Directory.GetFiles(dir))
+        {
+            list.Add(Path.GetFileName(file));
+        }
+
+        list.Sort(StringComparer.Ordinal);
+        return list;
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { File.Delete(path); } catch (Exception) { }
     }
 
     // ---------- 基础设施 ----------

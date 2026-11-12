@@ -284,7 +284,7 @@ public sealed class ImageService : IImageService
             {
                 // 必须走 Win32 写回：File.WriteAllBytes 在文件被内存映射时会抛
                 // 「请求的操作无法在使用用户映射区域打开的文件上执行」。
-                var temp = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".idfix";
+                var temp = GetWorkTempPath(path, ".idfix", ".tmp");
                 File.WriteAllBytes(temp, data);
 
                 if (TryWriteBackNative(temp, path, out var writeError))
@@ -481,9 +481,7 @@ public sealed class ImageService : IImageService
         }
 
         var extension = Path.GetExtension(path);
-        var tempPath = Path.Combine(
-            directory,
-            fileName + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".btmp" + extension);
+        var tempPath = GetWorkTempPath(path, ".btmp", extension);
 
         try
         {
@@ -491,9 +489,7 @@ public sealed class ImageService : IImageService
             // 原因：libvips 有操作缓存，同一个路径在同一进程里二次加载可能拿到改动前的旧像素
             // （实测：旋转完再读，读回来还是旋转前的尺寸）；换个从没出现过的文件名就绝不会命中。
             // 快照用 .btmp 后缀，扫描与清理逻辑已经把它排除在外。
-            var snapshotPath = Path.Combine(
-                directory,
-                fileName + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".btmp" + extension);
+            var snapshotPath = GetWorkTempPath(path, ".btmp", extension);
 
             var encodeSource = path;
             try
@@ -549,6 +545,289 @@ public sealed class ImageService : IImageService
             TryDelete(tempPath);
             AppServices.Log?.Warn("处理", $"连续 JPEG 转基线异常：{ex.Message}", directory, fileName);
             return result.WithExtraMessage("连续 JPEG 转基线异常");
+        }
+    }
+
+    /// <summary>TIFF 的关键结构标签（只读第一个 IFD，不做解码）。</summary>
+    private readonly record struct TiffStructure(int SamplesPerPixel, int Photometric, int[] ExtraSamples, int BitsPerSampleCount);
+
+    /// <summary>
+    /// 对比旋转前后的 TIFF 结构，确认透明通道没有被写丢。
+    /// <para>
+    /// 源图有 alpha（SamplesPerPixel 大于 Photometric 对应的基色数，或带 ExtraSamples），
+    /// 输出就必须同样带 alpha：样本数、Photometric、ExtraSamples 三项都要对得上。
+    /// </para>
+    /// </summary>
+    /// <param name="sourcePath">源图（尚未被覆盖）。</param>
+    /// <param name="outputPath">旋转后的中转文件。</param>
+    /// <param name="error">不一致的原因。</param>
+    private static bool VerifyTiffAlphaPreserved(string sourcePath, string outputPath, out string error)
+    {
+        error = string.Empty;
+
+        try
+        {
+            var source = ReadTiffStructure(sourcePath);
+            if (source is null)
+            {
+                // 源图读不出结构就无从校验，交给后续流程。
+                return true;
+            }
+
+            var output = ReadTiffStructure(outputPath);
+            if (output is null)
+            {
+                error = "输出文件不是可解析的 TIFF";
+                return false;
+            }
+
+            var sourceHasAlpha = source.Value.SamplesPerPixel > BaseChannels(source.Value.Photometric)
+                                 || source.Value.ExtraSamples.Length > 0;
+
+            if (!sourceHasAlpha)
+            {
+                return true;
+            }
+
+            var outputHasAlpha = output.Value.SamplesPerPixel > BaseChannels(output.Value.Photometric)
+                                 || output.Value.ExtraSamples.Length > 0;
+
+            if (!outputHasAlpha)
+            {
+                error = $"源图 {source.Value.SamplesPerPixel} 通道(Photometric={source.Value.Photometric})，"
+                        + $"输出只有 {output.Value.SamplesPerPixel} 通道(Photometric={output.Value.Photometric})";
+                return false;
+            }
+
+            if (source.Value.ExtraSamples.Length > 0 && output.Value.ExtraSamples.Length == 0)
+            {
+                error = "输出的 ExtraSamples 标签丢失";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Photometric 对应的基色通道数（2=RGB→3，5=CMYK→4，0/1=灰度→1）。</summary>
+    private static int BaseChannels(int photometric) => photometric switch
+    {
+        2 => 3,
+        5 => 4,
+        0 or 1 => 1,
+        _ => 3
+    };
+
+    /// <summary>
+    /// 读 TIFF 关键结构（SamplesPerPixel / Photometric / ExtraSamples / BitsPerSample 个数）。
+    /// 只解析第一个 IFD，不做像素解码，毫秒级。给测试与排障用。
+    /// </summary>
+    public static (int SamplesPerPixel, int Photometric, int[] ExtraSamples, int BitsPerSampleCount)? ProbeTiffStructure(string path)
+    {
+        var structure = ReadTiffStructure(path);
+        return structure is null
+            ? null
+            : (structure.Value.SamplesPerPixel, structure.Value.Photometric,
+               structure.Value.ExtraSamples, structure.Value.BitsPerSampleCount);
+    }
+
+    /// <summary>读第一个 IFD 的 277/262/338/258 标签；解析失败返回 null。</summary>
+    private static TiffStructure? ReadTiffStructure(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096);
+        using var reader = new BinaryReader(stream);
+
+        if (stream.Length < 8)
+        {
+            return null;
+        }
+
+        var order = reader.ReadBytes(2);
+        var little = order[0] == 'I' && order[1] == 'I';
+
+        if (!little && !(order[0] == 'M' && order[1] == 'M'))
+        {
+            return null;
+        }
+
+        if (ReadUInt16(reader, little) != 42)
+        {
+            return null;
+        }
+
+        var ifdOffset = ReadUInt32(reader, little);
+        if (ifdOffset <= 0 || ifdOffset >= stream.Length)
+        {
+            return null;
+        }
+
+        stream.Seek(ifdOffset, SeekOrigin.Begin);
+
+        var count = ReadUInt16(reader, little);
+        var spp = 0;
+        var photometric = -1;
+        var bitsCount = 0;
+        var extras = Array.Empty<int>();
+
+        for (var i = 0; i < count; i++)
+        {
+            var tag = ReadUInt16(reader, little);
+            var type = ReadUInt16(reader, little);
+            var valueCount = ReadUInt32(reader, little);
+            var valueBytes = reader.ReadBytes(4);
+
+            switch (tag)
+            {
+                case 277 when type == 3:
+                    spp = ReadUInt16From(valueBytes, 0, little);
+                    break;
+
+                case 262 when type == 3:
+                    photometric = ReadUInt16From(valueBytes, 0, little);
+                    break;
+
+                case 258:
+                    bitsCount = (int)valueCount;
+                    break;
+
+                case 338 when type == 3:
+                    extras = new int[valueCount];
+                    if (valueCount <= 2)
+                    {
+                        for (var k = 0; k < valueCount; k++)
+                        {
+                            extras[k] = ReadUInt16From(valueBytes, k * 2, little);
+                        }
+                    }
+                    else
+                    {
+                        var back = stream.Position;
+                        var offset = BitConverter.ToUInt32(little ? valueBytes : valueBytes.Reverse().ToArray(), 0);
+                        stream.Seek(offset, SeekOrigin.Begin);
+                        for (var k = 0; k < valueCount; k++)
+                        {
+                            extras[k] = ReadUInt16(reader, little);
+                        }
+
+                        stream.Seek(back, SeekOrigin.Begin);
+                    }
+
+                    break;
+            }
+        }
+
+        return new TiffStructure(spp, photometric, extras, bitsCount);
+    }
+
+    private static ushort ReadUInt16(BinaryReader reader, bool little)
+    {
+        var bytes = reader.ReadBytes(2);
+        return ReadUInt16From(bytes, 0, little);
+    }
+
+    private static ushort ReadUInt16From(byte[] bytes, int offset, bool little)
+    {
+        return little
+            ? (ushort)(bytes[offset] | (bytes[offset + 1] << 8))
+            : (ushort)((bytes[offset] << 8) | bytes[offset + 1]);
+    }
+
+    private static uint ReadUInt32(BinaryReader reader, bool little)
+    {
+        var bytes = reader.ReadBytes(4);
+        if (!little)
+        {
+            Array.Reverse(bytes);
+        }
+
+        return BitConverter.ToUInt32(bytes, 0);
+    }
+
+    /// <summary>中转文件目录：**系统临时目录**，绝不放业务目录。</summary>
+    private static readonly string WorkTempDirectory =
+        Path.Combine(Path.GetTempPath(), "PivotPic", "work");
+
+    /// <summary>
+    /// 申请一个中转文件路径（旋转中转 / 编码快照 / 分量 ID 修正都走这里）。
+    /// <para>
+    /// **为什么必须离开业务目录**：中转文件在 libvips 写完后是「一张完整可打开的图」，
+    /// 大图要写 2–5 秒，这段时间打印软件按目录扫描就会把它当成新图收走 → 多印一张，
+    /// 这是真实的经济损失。业务目录里从头到尾只能出现原图一个文件。
+    /// </para>
+    /// <para>
+    /// 保留原文件名前缀，排查时能一眼对上是哪张图。
+    /// </para>
+    /// </summary>
+    /// <param name="sourcePath">原图路径（只取文件名做前缀）。</param>
+    /// <param name="kind">中转类型标记，如 <c>.vtmp</c> / <c>.btmp</c> / <c>.idfix</c>。</param>
+    /// <param name="extension">扩展名（含点），保持与源图一致，编码器才能正确推断格式。</param>
+    public static string GetWorkTempPath(string sourcePath, string kind, string extension)
+    {
+        try
+        {
+            Directory.CreateDirectory(WorkTempDirectory);
+        }
+        catch (Exception)
+        {
+            // 建不出来就退回系统临时目录根，功能优先。
+            return Path.Combine(Path.GetTempPath(),
+                Path.GetFileName(sourcePath) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + kind + extension);
+        }
+
+        var prefix = Path.GetFileNameWithoutExtension(sourcePath);
+
+        return Path.Combine(
+            WorkTempDirectory,
+            prefix + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + kind + extension);
+    }
+
+    /// <summary>
+    /// 启动时清理中转目录：只删超过 24 小时的文件（正在跑的进程可能还在用新的）。
+    /// </summary>
+    public static void CleanupWorkTemp()
+    {
+        try
+        {
+            if (!Directory.Exists(WorkTempDirectory))
+            {
+                return;
+            }
+
+            var cutoff = DateTime.UtcNow.AddHours(-24);
+            var removed = 0;
+
+            foreach (var file in Directory.EnumerateFiles(WorkTempDirectory))
+            {
+                try
+                {
+                    var info = new FileInfo(file);
+                    if (info.LastWriteTimeUtc > cutoff)
+                    {
+                        continue;
+                    }
+
+                    info.Delete();
+                    removed++;
+                }
+                catch (Exception)
+                {
+                    // 单个删不掉不影响其它。
+                }
+            }
+
+            if (removed > 0)
+            {
+                AppServices.Log?.Info("清理", $"已清理中转目录 {removed} 个超过 24 小时的文件", WorkTempDirectory);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppServices.Log?.Warn("清理", $"清理中转目录失败：{ex.Message}");
         }
     }
 
@@ -869,9 +1148,9 @@ public sealed class ImageService : IImageService
         }
 
         var extension = Path.GetExtension(path);
-        var tempPath = Path.Combine(
-            directory,
-            Path.GetFileName(path) + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".vtmp" + extension);
+
+        // 中转文件放系统临时目录，业务目录里全程只有原图一个文件。
+        var tempPath = GetWorkTempPath(path, ".vtmp", extension);
 
         try
         {
@@ -896,6 +1175,18 @@ public sealed class ImageService : IImageService
 
             // 写回必须走 Win32 就地覆写：SMB 上 File.Replace / File.Delete 在「文件被本进程读过」之后
             // 必然返回共享冲突，网络盘上每一张需要旋转的图都会因此失败（v1.3.24 的真实事故）。
+            // 写回之前先校验「带透明度的 TIFF 有没有被写坏」。
+            // 一旦 alpha / ExtraSamples 丢了，打印出来就是没有透明度——错的文件会被直接送印，
+            // 属于有经济损失的错误，宁可判失败也不能默默写回。
+            if (IsTiff(path) && !VerifyTiffAlphaPreserved(path, tempPath, out var alphaError))
+            {
+                TryDelete(tempPath);
+                AppServices.Log?.Error("处理", $"TIFF 旋转会丢失透明通道，已中止写回：{alphaError}",
+                    directory, Path.GetFileName(path));
+
+                return VipsNative.VipsRotateOutcome.WriteFailed;
+            }
+
             if (!TryWriteBackWithRetry(tempPath, path, out var vipsWriteError))
             {
                 TryDelete(tempPath);
