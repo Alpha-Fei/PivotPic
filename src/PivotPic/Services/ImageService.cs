@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -599,9 +600,12 @@ public sealed class ImageService : IImageService
                 return false;
             }
 
-            if (source.Value.ExtraSamples.Length > 0 && output.Value.ExtraSamples.Length == 0)
+            // ExtraSamples 必须**逐值相等**：1=预乘 alpha、2=独立 alpha，语义不同，
+            // RIP 按这个值决定怎么解释同一份像素数据，改了就等于换了一张图。
+            if (!source.Value.ExtraSamples.SequenceEqual(output.Value.ExtraSamples))
             {
-                error = "输出的 ExtraSamples 标签丢失";
+                error = $"ExtraSamples 被改写：源 [{string.Join(",", source.Value.ExtraSamples)}]"
+                        + $" → 输出 [{string.Join(",", output.Value.ExtraSamples)}]";
                 return false;
             }
 
@@ -1175,16 +1179,29 @@ public sealed class ImageService : IImageService
 
             // 写回必须走 Win32 就地覆写：SMB 上 File.Replace / File.Delete 在「文件被本进程读过」之后
             // 必然返回共享冲突，网络盘上每一张需要旋转的图都会因此失败（v1.3.24 的真实事故）。
-            // 写回之前先校验「带透明度的 TIFF 有没有被写坏」。
-            // 一旦 alpha / ExtraSamples 丢了，打印出来就是没有透明度——错的文件会被直接送印，
-            // 属于有经济损失的错误，宁可判失败也不能默默写回。
-            if (IsTiff(path) && !VerifyTiffAlphaPreserved(path, tempPath, out var alphaError))
+            // TIFF 的 alpha 语义标签必须原样保留。
+            // libvips 写出的 ExtraSamples 恒为 2（独立 alpha），而预乘 alpha 源图是 1（ASSOCIATED）——
+            // 像素数据没变，但 RIP 按标签解释同一份像素，透明区就会被当成有颜色像素印出来
+            // （Photoshop 两种语义都能显示，肉眼看不出，打印才露馅）。
+            if (IsTiff(path))
             {
-                TryDelete(tempPath);
-                AppServices.Log?.Error("处理", $"TIFF 旋转会丢失透明通道，已中止写回：{alphaError}",
-                    directory, Path.GetFileName(path));
+                // 先把 ExtraSamples / SampleFormat 改回源图的值，再严格校验。
+                if (!TiffTagWriter.TryRestoreAlphaTags(path, tempPath, out var restoreError))
+                {
+                    TryDelete(tempPath);
+                    AppServices.Log?.Error("处理", $"TIFF alpha 标签还原失败，已中止写回：{restoreError}",
+                        directory, Path.GetFileName(path));
+                    return VipsNative.VipsRotateOutcome.WriteFailed;
+                }
 
-                return VipsNative.VipsRotateOutcome.WriteFailed;
+                if (!VerifyTiffAlphaPreserved(path, tempPath, out var alphaError))
+                {
+                    TryDelete(tempPath);
+                    AppServices.Log?.Error("处理", $"TIFF 旋转会破坏透明通道，已中止写回：{alphaError}",
+                        directory, Path.GetFileName(path));
+
+                    return VipsNative.VipsRotateOutcome.WriteFailed;
+                }
             }
 
             if (!TryWriteBackWithRetry(tempPath, path, out var vipsWriteError))

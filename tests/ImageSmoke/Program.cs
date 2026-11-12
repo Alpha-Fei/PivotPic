@@ -117,6 +117,8 @@ internal static class Program
         Run("25", "写回时目标被占用：退避重试后成功且不留临时文件", () => Case25Test(image));
         Run("27", "中转文件不落在业务目录（全程只有原图一个文件）", () => Case27Test(image));
         Run("28", "RGBA TIFF 旋转后 alpha 仍是 0..255 且 ExtraSamples=2", () => Case28Test(image));
+        Run("29", "预乘 alpha(ExtraSamples=1) 旋转后必须仍是 1，SampleFormat 不得凭空出现", () => Case29Test(image));
+        Run("30", "独立 alpha(ExtraSamples=2) 旋转后必须仍是 2", () => Case30Test(image));
 
         PrintTable();
         return Table.TrueForAll(item => item.Pass) ? 0 : 1;
@@ -1006,6 +1008,68 @@ internal static class Program
     private static void TryDeleteFile(string path)
     {
         try { File.Delete(path); } catch (Exception) { }
+    }
+
+    /// <summary>
+    /// 预乘 alpha（ExtraSamples=1，ASSOCIATED）旋转后必须**仍是 1**。
+    /// libvips 会写成 2，而 RIP 按标签解释同一份像素数据：改了标签就等于换了一张图，
+    /// 透明区会被当成有颜色的像素印出来——这是用户「打印时没有透明度」的真凶。
+    /// </summary>
+    private static void Case29Test(IImageService image)
+    {
+        RunAlphaTagCase("29", image, expectedExtra: 1);
+    }
+
+    /// <summary>独立 alpha（ExtraSamples=2，UNASSOCIATED）旋转后必须仍是 2。</summary>
+    private static void Case30Test(IImageService image)
+    {
+        RunAlphaTagCase("30", image, expectedExtra: 2);
+    }
+
+    /// <summary>构造指定 ExtraSamples 的 RGBA TIFF，旋转后校验标签逐值不变、SampleFormat 不得凭空出现。</summary>
+    private static void RunAlphaTagCase(string caseId, IImageService image, int expectedExtra)
+    {
+        var dir = Path.Combine(_root, "alpha_tag_" + caseId);
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"rgba_extra{expectedExtra}_3000x2000.tif");
+
+        MakeRgbaTiff(path, 3000, 2000);
+
+        // WPF 写出来恒定 ExtraSamples=2 / SampleFormat 全 1，这里改成目标语义。
+        if (!TiffTagWriter.TryApply(path, 338, new[] { expectedExtra }, out var applyError))
+        {
+            Check(caseId, "alpha 标签用例", false, $"构造失败：{applyError}");
+            return;
+        }
+
+        // 源图就没有 SampleFormat，输出也不许凭空出现。
+        TiffTagWriter.TryApply(path, 339, null, out _);
+
+        var before = ImageService.ProbeTiffStructure(path);
+
+        var result = image.Process(path, RotationMode.LibVips, RotateDirection.Clockwise, DefaultMaxPixels);
+
+        var after = ImageService.ProbeTiffStructure(path);
+        var afterAlpha = ReadAlphaRange(path);
+
+        var tagsOk = before is not null && after is not null
+                     && after.Value.SamplesPerPixel == before.Value.SamplesPerPixel
+                     && after.Value.Photometric == before.Value.Photometric
+                     && after.Value.ExtraSamples.Length == 1
+                     && after.Value.ExtraSamples[0] == expectedExtra
+                     && after.Value.ExtraSamples[0] == before.Value.ExtraSamples[0];
+
+        // SampleFormat(339) 源图没有 → 输出也不该有（结构里的 BitsPerSampleCount 只记数量，单独用 ProbeTiffStructure 看不到 339，
+        // 所以这里用 TiffTagWriter 直接读）。
+        var sampleFormat = TiffTagWriter.ReadShortArray(path, 339);
+        var sampleFormatOk = sampleFormat is null;
+
+        var ok = result.Rotated && tagsOk && sampleFormatOk && afterAlpha.min == 0 && afterAlpha.max == 255;
+
+        Check(caseId, $"ExtraSamples={expectedExtra} 旋转后保持不变", ok,
+            $"Rotated={result.Rotated} 源Extra=[{string.Join(",", before?.ExtraSamples ?? Array.Empty<int>())}]" +
+            $" → 输出Extra=[{string.Join(",", after?.ExtraSamples ?? Array.Empty<int>())}]" +
+            $" SampleFormat={(sampleFormat is null ? "无" : string.Join(",", sampleFormat))} alpha={afterAlpha.min}..{afterAlpha.max}");
     }
 
     // ---------- 基础设施 ----------
