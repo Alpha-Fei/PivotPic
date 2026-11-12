@@ -79,10 +79,15 @@ public static class TiffTagWriter
             }
             else if (existing.Tag != 0)
             {
-                // 改值：条目类型/计数不变，只换数据。
+                // 改值：类型不变，计数与数据一起更新。
                 // RawValueBytes 必须清空——它代表「原 4 字节 value/offset」，留着会被原样抄回去，等于没改。
                 entries[entries.FindIndex(e => e.Tag == tag)] =
-                    existing with { ShortValues = values.ToList(), RawValueBytes = Array.Empty<byte>() };
+                    existing with
+                    {
+                        Count = (uint)values.Count,
+                        ShortValues = values.ToList(),
+                        RawValueBytes = Array.Empty<byte>()
+                    };
             }
             else
             {
@@ -292,12 +297,18 @@ public static class TiffTagWriter
                 // 未改动（或改动时沿用原值区）：字节级照抄，指针保持有效。
                 Buffer.BlockCopy(entry.RawValueBytes, 0, raw, 8, 4);
             }
-            else if (entry.Type == TypeShort && entry.Count * 2 <= 4)
+            else if (entry.Type == TypeShort && entry.Count * 2 <= 4 && entry.ShortValues.Count >= entry.Count)
             {
                 for (var i = 0; i < entry.Count && i < 2; i++)
                 {
                     WriteU16Raw(raw, 8 + i * 2, little, (ushort)entry.ShortValues[i]);
                 }
+            }
+            else if (entry.RawValueBytes.Length > 0)
+            {
+                // 有原始字节就用原始字节（未修改的外部值条目）。
+                var copyLen = Math.Min(4, entry.RawValueBytes.Length);
+                Buffer.BlockCopy(entry.RawValueBytes, 0, raw, 8, copyLen);
             }
             else
             {

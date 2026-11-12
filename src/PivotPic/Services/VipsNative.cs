@@ -24,6 +24,9 @@ internal static class VipsNative
     private static VipsInit? _init;
     private static VipsNewFromFile? _newFromFile;
     private static VipsRot? _rot;
+    private static VipsNewFromMemory? _newFromMemory;
+    private static VipsImageSetInt? _setImageInt;
+    private static VipsCopy? _copy;
     private static VipsWriteToFile? _writeToFile;
     private static VipsGetInt? _getWidth;
     private static VipsGetInt? _getHeight;
@@ -65,6 +68,15 @@ internal static class VipsNative
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void GObjectUnref(IntPtr obj);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate IntPtr VipsNewFromMemory(IntPtr data, UIntPtr size, int width, int height, int bands, int format);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int VipsImageSetInt(IntPtr image, [MarshalAs(UnmanagedType.LPUTF8Str)] string name, int value);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int VipsCopy(IntPtr input, out IntPtr output, IntPtr options);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate IntPtr VipsErrorBuffer();
@@ -119,6 +131,9 @@ internal static class VipsNative
                 _init = GetExport<VipsInit>(handle, "vips_init");
                 _newFromFile = GetExport<VipsNewFromFile>(handle, "vips_image_new_from_file");
                 _rot = GetExport<VipsRot>(handle, "vips_rot");
+                _newFromMemory = GetExport<VipsNewFromMemory>(handle, "vips_image_new_from_memory");
+                _setImageInt = GetExport<VipsImageSetInt>(handle, "vips_image_set_int");
+                _copy = GetExport<VipsCopy>(handle, "vips_copy");
                 _writeToFile = GetExport<VipsWriteToFile>(handle, "vips_image_write_to_file");
                 _getWidth = GetExport<VipsGetInt>(handle, "vips_image_get_width");
                 _getHeight = GetExport<VipsGetInt>(handle, "vips_image_get_height");
@@ -442,6 +457,11 @@ internal static class VipsNative
     /// <param name="saveOptions">vips 保存选项，如 compression=lzw。</param>
     /// <param name="outputWidth">旋转后的宽度。</param>
     /// <param name="outputHeight">旋转后的高度。</param>
+    /// <param name="premultiplyAlpha">
+    /// 源图 ExtraSamples=1（预乘 alpha）时传 true。
+    /// libvips 加载时会把预乘数据自动反预乘成直通（color*255/alpha），写出前必须重新预乘回去，
+    /// 否则「数据是直通、标签说是预乘」→ 打印机按预乘解释 → 颜色全错。
+    /// </param>
     public static VipsRotateOutcome TryRotate(string sourcePath, string destinationPath,
         int probePixelWidth, int probeOrientedWidth, int baseAngle, int delta,
         string? saveOptions, out int outputWidth, out int outputHeight)
@@ -516,6 +536,8 @@ internal static class VipsNative
                 source = output;
             }
 
+            // 源图是预乘 alpha 时，libvips 加载后已把数据反预乘（color*255/alpha）。
+            // 写出前必须重新预乘回去，否则数据是直通、标签说是预乘 → 打印机颜色全错。
             var target = string.IsNullOrEmpty(saveOptions)
                 ? destinationPath
                 : destinationPath + "[" + saveOptions + "]";
@@ -546,6 +568,7 @@ internal static class VipsNative
             {
                 _unref!(input);
             }
+
         }
     }
 
